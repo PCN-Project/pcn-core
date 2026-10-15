@@ -139,6 +139,14 @@ receivers dedup by `(source, packet_id)` and print retries as
 the ACK may arrive late. `pcnd` uses the same `(source, packet_id)`
 dedup before logging `delivered:`.
 
+Dedup caveats, stated plainly: the cache is in-memory (a receiver
+restart loses it - a resent packet is then delivered again), bounded at
+4096 keys (a full cache resets, so a delayed retransmit of an evicted
+key redelivers once), and keyed on `(source, packet_id)` where
+`packet_id` is a per-process nanoseconds+pid seed. This is at-most-once
+*during a receiver's lifetime while the entry is cached* - not
+exactly-once delivery.
+
 Inter-node transport is UDP only; there is no dynamic routing,
 cryptographic neighbor identity, or PCN Global.
 

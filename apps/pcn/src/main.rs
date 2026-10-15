@@ -646,10 +646,18 @@ fn recv(config: &RecvConfig) -> Result<(), String> {
                     continue;
                 }
                 let h = p.header();
-                let duplicate = !seen.insert((h.source(), h.packet_id()));
-                if !duplicate && seen.len() > 4096 {
-                    seen.clear();
-                }
+                // Check first, evict a full cache, then insert: clearing
+                // after insert would evict the just-seen key itself.
+                let key = (h.source(), h.packet_id());
+                let duplicate = if seen.contains(&key) {
+                    true
+                } else {
+                    if seen.len() >= 4096 {
+                        seen.clear();
+                    }
+                    seen.insert(key);
+                    false
+                };
                 // ACK first, then report - even a duplicate gets its ACK
                 // (it may be a retry after a lost one).
                 if let Some(via) = config.via {

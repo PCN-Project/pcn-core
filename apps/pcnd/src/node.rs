@@ -224,16 +224,22 @@ fn act(
         Action::DeliverThen { packet, then } => {
             let h = packet.header();
             // Dedup fires only for DATA; other DeliverThen payloads are
-            // already protected by their sender-side semantics.
-            if h.packet_type() == PacketType::Data && !seen_data.insert((h.source(), h.packet_id()))
-            {
-                log_delivered(&packet, true);
-            } else {
-                if seen_data.len() > 4096 {
-                    seen_data.clear();
+            // already protected by their sender-side semantics. Check
+            // membership first, then evict-then-insert: clearing after
+            // insert would evict the just-seen key itself.
+            let duplicate = h.packet_type() == PacketType::Data && {
+                let key = (h.source(), h.packet_id());
+                if seen_data.contains(&key) {
+                    true
+                } else {
+                    if seen_data.len() >= 4096 {
+                        seen_data.clear();
+                    }
+                    seen_data.insert(key);
+                    false
                 }
-                log_delivered(&packet, false);
-            }
+            };
+            log_delivered(&packet, duplicate);
             act(transport, *then, malformed_count, seen_data);
         }
         Action::Send {
@@ -866,6 +872,26 @@ mod tests {
             },
             other => panic!("expected DeliverThen, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn handle_drops_exhausted_transit_ack() {
+        // ACKs follow the same hop-limit rules as DATA when in transit.
+        let cfg = config();
+        let wire = Packet::builder(PacketType::Ack, addr(2), addr(9))
+            .packet_id(1)
+            .payload([])
+            .hop_limit(1)
+            .build()
+            .unwrap()
+            .encode();
+        assert!(matches!(
+            handle(&cfg, &wire),
+            Action::Drop {
+                reason: DropReason::HopLimitExhausted,
+                ..
+            }
+        ));
     }
 
     #[test]

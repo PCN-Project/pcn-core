@@ -7,6 +7,7 @@
 //! bind-0-then-release (small TOCTOU caveat, far better than fixed
 //! ports).
 
+use pcn_packet::MAX_PACKET_LEN;
 use std::io::{BufRead, BufReader};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::path::PathBuf;
@@ -19,6 +20,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Common private-type PCN test addresses (values 1/9/2).
 pub const A_ADDR: &str = "pcn~1000-0000-00001";
+// Used by router-topology tests; not every test binary needs it.
+#[allow(dead_code)]
 pub const R1_ADDR: &str = "pcn~1000-0000-00009";
 pub const B_ADDR: &str = "pcn~1000-0000-00002";
 
@@ -141,4 +144,64 @@ pub fn run_pcn(subcmd: &str, args: &[String], limit: Duration) -> Output {
             Err(e) => panic!("pcn wait failed: {e}"),
         }
     }
+}
+
+/// What a [`udp_proxy`] does with one datagram.
+///
+/// Only fault-injection tests use this; the shared module also compiles
+/// into other test binaries, hence `allow(dead_code)`.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum Fault {
+    /// Send the datagram on to the destination.
+    Forward,
+    /// Silently discard it.
+    Drop,
+    /// Send it twice (immediate re-send).
+    Duplicate,
+    /// Hold it for the given time, then send. The proxy thread blocks
+    /// inside `recv_from` handling, so delays serialize behind later
+    /// arrivals - deterministic enough for these tests where a single
+    /// flow crosses the proxy at a time.
+    Delay(Duration),
+}
+
+/// Spawns a deterministic one-way UDP relay: `listen` -> `dest`.
+/// `rule(seq, payload)` decides each datagram's fate in arrival order
+/// (`seq` counts received datagrams from 0). Test-only: the proxy does
+/// not parse PCN itself - tests pattern-match on `pcn_packet` or `seq`.
+///
+/// The thread runs until the test process exits; dropping the returned
+/// handle detaches it, which is fine for bounded test lifetimes.
+#[allow(dead_code)]
+pub fn udp_proxy(
+    listen: SocketAddr,
+    dest: SocketAddr,
+    mut rule: impl FnMut(usize, &[u8]) -> Fault + Send + 'static,
+) -> thread::JoinHandle<()> {
+    let sock = UdpSocket::bind(listen).expect("proxy bind failed");
+    thread::spawn(move || {
+        let mut seq = 0usize;
+        let mut buf = vec![0u8; MAX_PACKET_LEN];
+        loop {
+            let Ok((n, _src)) = sock.recv_from(&mut buf) else {
+                continue;
+            };
+            match rule(seq, &buf[..n]) {
+                Fault::Forward => {
+                    let _ = sock.send_to(&buf[..n], dest);
+                }
+                Fault::Drop => {}
+                Fault::Duplicate => {
+                    let _ = sock.send_to(&buf[..n], dest);
+                    let _ = sock.send_to(&buf[..n], dest);
+                }
+                Fault::Delay(d) => {
+                    thread::sleep(d);
+                    let _ = sock.send_to(&buf[..n], dest);
+                }
+            }
+            seq += 1;
+        }
+    })
 }
