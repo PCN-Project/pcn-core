@@ -1,7 +1,7 @@
 [package]
 name = "pcnd"
 version = "0.1.0"
-description = "PCN node daemon (v0.1 milestone: protocol selftest + packet inspector, no networking yet)"
+description = "PCN node daemon: UDP receive loop, static routing, packet selftest"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 pcn-packet = { path = "../../crates/pcn-packet", version = "0.1.0" }
 pcn-address = { path = "../../crates/pcn-address", version = "0.1.0" }
+pcn-routing = { path = "../../crates/pcn-routing", version = "0.1.0" }
+pcn-transport = { path = "../../crates/pcn-transport", version = "0.1.0" }
+pcn-transport-udp = { path = "../../crates/pcn-transport-udp", version = "0.1.0" }

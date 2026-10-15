@@ -41,10 +41,10 @@ pcn-core/
 | Component | What it does |
 |---|---|
 | `pcn-address` | 64-bit PCN-ADDR `Address` (type + 60-bit value + reserved bit; `pcn~TXXX-XXXX-XXXXX` Base32 text form), `AddressType`, `DomainId`, domain-qualified `ScopedAddress` |
-| `pcn-routing` | Static exact-match `RouteTable`, deliver/forward/drop decision, hop-limit-aware `forward` helper. Library only - not wired into `pcnd` yet |
+| `pcn-routing` | Static exact-match `RouteTable`, deliver/forward/drop decision, hop-limit-aware `forward` helper - drives `pcnd run` |
 | `pcn-transport` + `pcn-transport-udp` | `Transport` trait (send/recv/timeout/local endpoint) and a synchronous `UdpSocket` implementation |
 | `pcn-packet` | Typed `Header`/`Packet`/`PacketType`, deterministic big-endian encoding, validating parser with typed `ParseError`, `PacketBuilder` with `BuildError` |
-| `pcnd` | `pcnd selftest` exercises the codec; `pcnd check <hex>` decodes a datagram. No sockets, no async |
+| `pcnd` | `pcnd run` starts a real node: UDP receive loop, static routes, local delivery (log only), forwarding with Hop Limit decrement. `pcnd selftest`/`check <hex>` still work |
 
 ### Planned (not created - no empty crates)
 
@@ -73,6 +73,22 @@ Run the daemon's self-test and packet inspector:
 cargo run -p pcnd -- selftest
 cargo run -p pcnd -- check "0102 0000 0020 0004 40000000 20000000 00000002 40000000 00000004 abcd1234 deadbeef"
 ```
+
+Run a node (`pcnd run --help` for the full flag list):
+
+```bash
+# Node B on 127.0.0.1:41003 with PCN address pcn~1000-0000-00002
+pcnd run --listen 127.0.0.1:41003 \
+    --address pcn~1000-0000-00002 \
+    --next-hop 1=127.0.0.1:41002 \
+    --route pcn~1000-0000-00001=1
+```
+
+The node parses every UDP datagram as a PCN packet, applies the static
+route table, and logs each decision: `delivered:` (local destination),
+`forwarded:` (rebuilt with Hop Limit - 1 toward the next hop's endpoint),
+or `dropped:`. Delivered packets are only logged - there is no echo
+responder or ping yet.
 
 ## Engineering rules
 

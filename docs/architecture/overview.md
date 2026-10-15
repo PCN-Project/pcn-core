@@ -59,15 +59,15 @@ Built now:
 - `pcn-transport-udp` - UDP transport on `std::net::UdpSocket`:
   bind/send/recv/timeout, `SocketAddr` endpoints.
 - `pcn-routing` - static exact-match route table and the
-  deliver/forward/drop decision with hop-limit handling. A library only;
-  no node consumes it yet.
-- `pcnd` - minimal binary: `selftest` exercises the codec, `check`
-  decodes a hex datagram. No network I/O yet.
+  deliver/forward/drop decision with hop-limit handling.
+- `pcnd` - node daemon: `run` binds a UDP socket and drives the routing
+  decision loop (deliver locally - logged only, forward with Hop Limit
+  decrement, or drop); `selftest`/`check` remain.
 - Provisional specs under `docs/protocol/`.
 
-Explicitly not built: a node using routing (`pcnd` still opens no
-sockets), identity crypto, registry, policy, NAT traversal, Android
-packaging. See the README status table.
+Explicitly not built: echo responder and ping, identity crypto,
+registry, policy, NAT traversal, Android packaging. See the README
+status table.
 
 ## 4. Platforms
 

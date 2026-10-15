@@ -1,39 +1,37 @@
 //! `pcnd` - the PCN node daemon.
 //!
-//! Milestone 0.1 scope: the daemon does **not** open sockets or join a
-//! network yet. It exists to prove the workspace builds and to provide
-//! two honest, testable functions:
-//!
+//! * `pcnd run` - starts a real node: binds a UDP socket, parses PCN
+//!   packets, delivers locally-destined packets (log only) and forwards
+//!   transit packets per the static route table.
 //! * `pcnd selftest` - exercises the `pcn-packet` codec (encode, parse,
 //!   and each validation rejection path) and reports pass/fail.
 //! * `pcnd check <hex>` - decodes a datagram supplied as hexadecimal and
-//!   prints the header fields, or the precise reason it is invalid. This
-//!   is the same code path the future UDP transport will feed.
+//!   prints the header fields, or the precise reason it is invalid.
 //!
-//! Network services (UDP transport, routing, registry) are documented as
-//! planned components in the repository README.
+//! No echo responder or ping yet - delivered packets are only logged.
+
+mod node;
 
 use pcn_address::{Address, AddressType};
 use pcn_packet::{Packet, PacketType, ParseError, BASE_HEADER_LEN, PROTOCOL_VERSION};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-pcnd - PCN node daemon (v0.1 protocol milestone)
+pcnd - PCN node daemon
 
 USAGE:
     pcnd <command>
 
 COMMANDS:
+    run             Start a PCN node (UDP + static routes; 'run --help' for flags)
     selftest        Run packet codec encode/parse/validation checks
     check <hex>     Decode a wire datagram given as hex and print its header
-    version         Print version information
-
-The v0.1 daemon performs no network I/O. The UDP transport and routing
-layers are planned components; see README.md.";
+    version         Print version information";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("run") => node::run_command(&args[1..]),
         Some("selftest") => selftest(),
         Some("check") => match args.get(1) {
             Some(hex) => check(hex),
@@ -44,10 +42,7 @@ fn main() -> ExitCode {
             }
         },
         Some("version") | Some("--version") | Some("-V") => {
-            println!(
-                "pcnd {} (protocol v0.1, wire version {PROTOCOL_VERSION})",
-                env!("CARGO_PKG_VERSION")
-            );
+            println!("pcnd (wire version {PROTOCOL_VERSION})");
             ExitCode::SUCCESS
         }
         Some("help") | Some("--help") | Some("-h") => {
@@ -137,7 +132,7 @@ fn selftest() -> ExitCode {
         }
     };
 
-    println!("pcnd selftest - pcn-packet v0.1 (wire version {PROTOCOL_VERSION})");
+    println!("pcnd selftest - packet codec (wire version {PROTOCOL_VERSION})");
 
     // 1. Roundtrip.
     let src = Address::new(AddressType::Private, 0x10);
