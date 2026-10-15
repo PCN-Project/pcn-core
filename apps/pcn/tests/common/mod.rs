@@ -57,14 +57,29 @@ pub struct Proc {
 }
 
 impl Proc {
-    /// Spawns `bin` (a workspace binary name) with `args`.
-    pub fn spawn(bin: &str, args: &[String]) -> Self {
-        let mut child = Command::new(sibling_bin(bin))
-            .args(args)
+    /// Spawns `binary` with `args`, streaming its stdout lines into a
+    /// channel for [`expect_line`](Self::expect_line).
+    ///
+    /// # Panics
+    /// On spawn or stdout-pipe failure.
+    #[must_use]
+    pub fn spawn(binary: &str, args: &[String]) -> Self {
+        Self::spawn_env(binary, args, &[])
+    }
+
+    /// Like [`spawn`](Self::spawn) but sets extra environment variables
+    /// in the child (e.g. `PCN_VIA`, `HOME` for gateway tests).
+    ///
+    /// # Panics
+    /// On spawn or stdout-pipe failure.
+    #[must_use]
+    pub fn spawn_env(binary: &str, args: &[String], envs: &[(&str, &str)]) -> Self {
+        let mut cmd = Command::new(sibling_bin(binary));
+        cmd.args(args)
+            .envs(envs.iter().copied())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap_or_else(|e| panic!("spawn {bin}: {e}"));
+            .stderr(Stdio::null());
+        let mut child = cmd.spawn().expect("spawn failed");
         let stdout: ChildStdout = child.stdout.take().expect("piped stdout");
         let (tx, rx) = channel();
         thread::spawn(move || {
@@ -117,13 +132,32 @@ pub fn node(args: &[String]) -> Proc {
     Proc::spawn("pcnd", &full)
 }
 
-/// Runs a `pcn` subcommand to completion with a hard upper bound; a
-/// wedged client is killed so tests report instead of hanging.
+/// Runs `pcn <subcmd> args` to completion (bounded by `limit`) and
+/// returns its full output.
+///
+/// # Panics
+/// On spawn failure or timeout (kills the child first).
+#[allow(dead_code)]
 pub fn run_pcn(subcmd: &str, args: &[String], limit: Duration) -> Output {
+    run_pcn_env(subcmd, args, &[], limit)
+}
+
+/// Like [`run_pcn`] but sets extra environment variables in the child
+/// (e.g. `PCN_VIA`, `HOME`).
+///
+/// # Panics
+/// On spawn failure or timeout (kills the child first).
+pub fn run_pcn_env(
+    subcmd: &str,
+    args: &[String],
+    envs: &[(&str, &str)],
+    limit: Duration,
+) -> Output {
     let mut full = vec![subcmd.to_string()];
     full.extend(args.iter().cloned());
     let mut child = Command::new(sibling_bin("pcn"))
         .args(&full)
+        .envs(envs.iter().copied())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

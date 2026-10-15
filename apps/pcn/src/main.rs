@@ -17,6 +17,7 @@ use pcn_transport_udp::UdpTransport;
 use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,6 +31,7 @@ COMMANDS:
     ping            Probe a PCN address with ECHO_REQUEST/ECHO_REPLY
     send            Send a DATA packet (UTF-8 message) to a PCN address
     recv            Receive DATA packets addressed to a local PCN address
+    gateway         Show or set the default gateway
     version         Print version information";
 
 const PING_USAGE: &str = "\
@@ -44,7 +46,9 @@ OPTIONS:
                           your --source address back to it
     --source ADDR         local PCN address, pcn~ form or bare body
     --target ADDR         destination PCN address to probe
-    --via HOST:PORT       UDP endpoint of the first hop (gateway/router)
+    --via HOST:PORT       UDP endpoint of the first hop (default:
+                          $PCN_VIA, then ~/.pcn/gateway - see
+                          'pcn gateway')
     --count N             number of probes (default 4)
     --interval-ms MS      delay between probes (default 1000)
     --timeout-ms MS       per-probe reply timeout (default 1000)
@@ -55,7 +59,7 @@ Exit code: 0 = at least one reply, 1 = total loss or I/O error, 2 = bad
 arguments.";
 
 const SEND_USAGE: &str = "\
-pcn send - send a DATA packet to a PCN address (best-effort, no ACK)
+pcn send - send a DATA packet to a PCN address (ACKed by default)
 
 USAGE:
     pcn send --listen HOST:PORT --source ADDR --target ADDR
@@ -65,7 +69,8 @@ OPTIONS:
     --listen HOST:PORT    local UDP endpoint to bind (required)
     --source ADDR         local PCN address, pcn~ form or bare body
     --target ADDR         destination PCN address
-    --via HOST:PORT       UDP endpoint of the first hop (gateway/router)
+    --via HOST:PORT       UDP endpoint of the first hop (default:
+                          $PCN_VIA, then ~/.pcn/gateway)
     --message TEXT        UTF-8 message payload (required)
     --timeout-ms MS       per-attempt ACK timeout (default 1000)
     --retries N           retransmissions after a timeout (default 2)
@@ -89,8 +94,9 @@ OPTIONS:
     --listen HOST:PORT    local UDP endpoint to bind (required)
     --source ADDR         local PCN address to receive on
     --via HOST:PORT       UDP endpoint for ACKs back to senders
-                          (optional; without it recv is a passive sink
-                          and acked 'pcn send' will time out)
+                          (default: $PCN_VIA, then ~/.pcn/gateway;
+                          none configured = passive sink, acked
+                          'pcn send' will time out)
 
 Prints one line per matching DATA packet:
     data from pcn~...: <utf8 text or 0x hex>
@@ -100,12 +106,24 @@ All other datagrams (ECHO, foreign destinations, malformed bytes) are
 ignored. Runs until interrupted. Nodes sending to --source must route
 it to this --listen endpoint - there is no implicit return routing.";
 
+const GATEWAY_USAGE: &str = "\
+pcn gateway - show or set the default PCN gateway
+
+USAGE:
+    pcn gateway              show the effective gateway and its source
+    pcn gateway set H:P      store H:P in ~/.pcn/gateway
+
+A gateway is a physical UDP endpoint (HOST:PORT), not a PCN address.
+Precedence for every command that needs one:
+    --via flag > $PCN_VIA > ~/.pcn/gateway file";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("ping") => ping_command(&args[1..]),
         Some("send") => send_command(&args[1..]),
         Some("recv") => recv_command(&args[1..]),
+        Some("gateway") => gateway_command(&args[1..]),
         Some("version") | Some("--version") | Some("-V") => {
             println!("pcn (wire version {PROTOCOL_VERSION})");
             ExitCode::SUCCESS
@@ -137,8 +155,9 @@ struct PingConfig {
     source: Address,
     /// The probed PCN address; the request's destination.
     target: Address,
-    /// UDP endpoint of the first hop all requests are sent to.
-    via: SocketAddr,
+    /// UDP endpoint of the first hop; resolved from --via, $PCN_VIA or
+    /// ~/.pcn/gateway by the command layer.
+    via: Option<SocketAddr>,
     /// Number of probes.
     count: u32,
     /// Delay between probes.
@@ -154,11 +173,18 @@ fn ping_command(args: &[String]) -> ExitCode {
         println!("{PING_USAGE}");
         return ExitCode::SUCCESS;
     }
-    let config = match parse_ping_args(args) {
+    let mut config = match parse_ping_args(args) {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("error: {msg}");
             return ExitCode::from(2);
+        }
+    };
+    config.via = match require_gateway(config.via) {
+        Ok(v) => Some(v),
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
         }
     };
     match ping(&config) {
@@ -278,13 +304,14 @@ fn packet_id_seed() -> u32 {
 /// Returns an `Err` message on bind/send failures or a complete loss of
 /// replies - so the CLI exits nonzero on total failure.
 fn ping(config: &PingConfig) -> Result<(), String> {
+    let via = config.via.expect("via resolved by ping_command");
     let transport = UdpTransport::bind(config.listen)
         .map_err(|e| format!("cannot bind {}: {e}", config.listen))?;
     println!(
         "ping {} from {} via {} (listening on {})",
         config.target,
         config.source,
-        config.via,
+        via,
         transport
             .local_endpoint()
             .map_err(|e| format!("local addr: {e}"))?
@@ -303,8 +330,8 @@ fn ping(config: &PingConfig) -> Result<(), String> {
 
         let sent_at = Instant::now();
         transport
-            .send_to(&wire, &config.via)
-            .map_err(|e| format!("send to {}: {e}", config.via))?;
+            .send_to(&wire, &via)
+            .map_err(|e| format!("send to {via}: {e}"))?;
         let deadline = sent_at + config.timeout;
 
         match await_reply(&transport, deadline, sent_at, config, packet_id) {
@@ -447,7 +474,7 @@ fn parse_ping_args(args: &[String]) -> Result<PingConfig, String> {
         listen: listen.ok_or("ping requires --listen HOST:PORT")?,
         source: source.ok_or("ping requires --source ADDR")?,
         target: target.ok_or("ping requires --target ADDR")?,
-        via: via.ok_or("ping requires --via HOST:PORT")?,
+        via,
         count,
         interval,
         timeout,
@@ -464,8 +491,9 @@ struct SendConfig {
     source: Address,
     /// Destination PCN address.
     target: Address,
-    /// UDP endpoint of the first hop.
-    via: SocketAddr,
+    /// UDP endpoint of the first hop; resolved from --via, $PCN_VIA or
+    /// ~/.pcn/gateway by the command layer.
+    via: Option<SocketAddr>,
     /// UTF-8 message; becomes the DATA payload byte-for-byte.
     message: String,
     /// Per-attempt ACK timeout.
@@ -481,11 +509,18 @@ fn send_command(args: &[String]) -> ExitCode {
         println!("{SEND_USAGE}");
         return ExitCode::SUCCESS;
     }
-    let config = match parse_send_args(args) {
+    let mut config = match parse_send_args(args) {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("error: {msg}");
             return ExitCode::from(2);
+        }
+    };
+    config.via = match require_gateway(config.via) {
+        Ok(v) => Some(v),
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
         }
     };
     match send(&config) {
@@ -511,17 +546,17 @@ fn send(config: &SendConfig) -> Result<(), String> {
         .build()
         .map_err(|e| format!("cannot build DATA packet: {e}"))?;
     let wire = packet.encode();
+    let via = config.via.expect("via resolved by send_command");
 
     if config.no_ack {
         transport
-            .send_to(&wire, &config.via)
-            .map_err(|e| format!("send to {}: {e}", config.via))?;
+            .send_to(&wire, &via)
+            .map_err(|e| format!("send to {via}: {e}"))?;
         println!(
-            "sent {} B DATA {} -> {} via {} (id=0x{packet_id:08x}); unacknowledged",
+            "sent {} B DATA {} -> {} via {via} (id=0x{packet_id:08x}); unacknowledged",
             packet.payload().len(),
             config.source,
-            config.target,
-            config.via
+            config.target
         );
         return Ok(());
     }
@@ -530,8 +565,8 @@ fn send(config: &SendConfig) -> Result<(), String> {
     for attempt in 1..=attempts {
         let sent_at = Instant::now();
         transport
-            .send_to(&wire, &config.via)
-            .map_err(|e| format!("send to {}: {e}", config.via))?;
+            .send_to(&wire, &via)
+            .map_err(|e| format!("send to {via}: {e}"))?;
         match await_matching(&transport, sent_at, sent_at + config.timeout, |p| {
             match_ack(p, config.target, config.source, packet_id)
         })
@@ -596,11 +631,20 @@ fn recv_command(args: &[String]) -> ExitCode {
         println!("{RECV_USAGE}");
         return ExitCode::SUCCESS;
     }
-    let config = match parse_recv_args(args) {
+    let mut config = match parse_recv_args(args) {
         Ok(c) => c,
         Err(msg) => {
             eprintln!("error: {msg}");
             return ExitCode::from(2);
+        }
+    };
+    // recv may legitimately run without a gateway (passive sink), so
+    // an unconfigured gateway is not an error here - an invalid one is.
+    config.via = match resolve_gateway(config.via) {
+        Ok(v) => v.map(|(ep, _)| ep),
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::FAILURE;
         }
     };
     match recv(&config) {
@@ -734,12 +778,165 @@ fn parse_send_args(args: &[String]) -> Result<SendConfig, String> {
         listen: listen.ok_or("send requires --listen HOST:PORT")?,
         source: source.ok_or("send requires --source ADDR")?,
         target: target.ok_or("send requires --target ADDR")?,
-        via: via.ok_or("send requires --via HOST:PORT")?,
+        via,
         message: message.ok_or("send requires --message TEXT")?,
         timeout,
         retries,
         no_ack,
     })
+}
+
+const NO_GATEWAY_HINT: &str = "configure one with: --via HOST:PORT, \
+    PCN_VIA=HOST:PORT, or 'pcn gateway set HOST:PORT'";
+
+/// Where the effective gateway came from (for `pcn gateway` output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GwSource {
+    /// Explicit `--via`.
+    Cli,
+    /// `PCN_VIA` environment variable.
+    Env,
+    /// `~/.pcn/gateway` file.
+    File,
+}
+
+impl GwSource {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Cli => "from --via",
+            Self::Env => "from PCN_VIA",
+            Self::File => "from ~/.pcn/gateway",
+        }
+    }
+}
+
+/// `~/.pcn/gateway`; `None` when no home directory can be determined.
+fn gateway_file_path() -> Option<PathBuf> {
+    std::env::home_dir().map(|h| h.join(".pcn").join("gateway"))
+}
+
+/// `Ok(None)` = file missing or no HOME; `Err` = present but unreadable
+/// (permissions etc. - reported, not silently ignored).
+fn read_gateway_file() -> Result<Option<String>, String> {
+    let Some(path) = gateway_file_path() else {
+        return Ok(None);
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// The pure precedence chain - injected env/file contents keep this
+/// testable without touching the real environment or HOME.
+///
+/// `Ok(Some)` = resolved, `Ok(None)` = nothing configured (callers
+/// decide whether that is an error - it is for ping/send, not recv),
+/// `Err` = a configured value was invalid. A present-but-bad env or
+/// file value is an error, never a silent fallthrough.
+fn resolve_gateway_with(
+    explicit: Option<SocketAddr>,
+    env_val: Option<String>,
+    file_val: Option<String>,
+) -> Result<Option<(SocketAddr, GwSource)>, String> {
+    if let Some(ep) = explicit {
+        return Ok(Some((ep, GwSource::Cli)));
+    }
+    if let Some(raw) = env_val {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            return parse_endpoint(raw, "PCN_VIA").map(|ep| Some((ep, GwSource::Env)));
+        }
+    }
+    if let Some(raw) = file_val {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            return parse_endpoint(raw, "~/.pcn/gateway").map(|ep| Some((ep, GwSource::File)));
+        }
+    }
+    Ok(None)
+}
+
+/// Reads the real environment and config file, then applies
+/// [`resolve_gateway_with`].
+fn resolve_gateway(explicit: Option<SocketAddr>) -> Result<Option<(SocketAddr, GwSource)>, String> {
+    let env_val = std::env::var("PCN_VIA").ok();
+    let file_val = read_gateway_file()?;
+    resolve_gateway_with(explicit, env_val, file_val)
+}
+
+/// For ping/send a gateway is mandatory: resolution must produce one,
+/// with a clear how-to error otherwise.
+fn require_gateway(explicit: Option<SocketAddr>) -> Result<SocketAddr, String> {
+    match resolve_gateway(explicit)? {
+        Some((ep, _)) => Ok(ep),
+        None => Err(format!("no gateway configured: {NO_GATEWAY_HINT}")),
+    }
+}
+
+/// `pcn gateway set H:P` - writes the endpoint to ~/.pcn/gateway,
+/// creating the directory if needed.
+fn write_gateway_file(ep: SocketAddr) -> Result<PathBuf, String> {
+    let path = gateway_file_path().ok_or("cannot determine home directory for ~/.pcn/gateway")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, format!("{ep}\n"))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn gateway_command(args: &[String]) -> ExitCode {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{GATEWAY_USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    match args.first().map(String::as_str) {
+        None => match resolve_gateway(None) {
+            Ok(Some((ep, src))) => {
+                println!("{ep} ({})", src.describe());
+                ExitCode::SUCCESS
+            }
+            Ok(None) => {
+                println!("no default gateway configured");
+                println!("{NO_GATEWAY_HINT}");
+                ExitCode::SUCCESS
+            }
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("set") => match args.get(1) {
+            Some(raw) => match parse_endpoint(raw, "gateway set") {
+                Ok(ep) => match write_gateway_file(ep) {
+                    Ok(path) => {
+                        println!("default gateway: {ep} ({})", path.display());
+                        ExitCode::SUCCESS
+                    }
+                    Err(msg) => {
+                        eprintln!("error: {msg}");
+                        ExitCode::FAILURE
+                    }
+                },
+                Err(msg) => {
+                    eprintln!("error: {msg}");
+                    ExitCode::from(2)
+                }
+            },
+            None => {
+                eprintln!("error: 'gateway set' requires HOST:PORT");
+                ExitCode::from(2)
+            }
+        },
+        Some(other) => {
+            eprintln!("error: unknown gateway argument '{other}'");
+            eprintln!("{GATEWAY_USAGE}");
+            ExitCode::from(2)
+        }
+    }
 }
 
 /// Parses `pcn recv` arguments.
@@ -915,6 +1112,43 @@ mod tests {
             "--no-ack=yes".into(),
         ])
         .is_err());
+    }
+
+    #[test]
+    fn gateway_resolution_precedence() {
+        let cli: SocketAddr = "127.0.0.1:1111".parse().unwrap();
+        let env: SocketAddr = "127.0.0.1:2222".parse().unwrap();
+        let file: SocketAddr = "127.0.0.1:3333".parse().unwrap();
+        let env_s = || Some(env.to_string());
+        let file_s = || Some(file.to_string());
+
+        // Explicit flag wins over everything.
+        assert_eq!(
+            resolve_gateway_with(Some(cli), env_s(), file_s()).unwrap(),
+            Some((cli, GwSource::Cli))
+        );
+        // Env wins over file.
+        assert_eq!(
+            resolve_gateway_with(None, env_s(), file_s()).unwrap(),
+            Some((env, GwSource::Env))
+        );
+        // File used when nothing higher exists.
+        assert_eq!(
+            resolve_gateway_with(None, None, file_s()).unwrap(),
+            Some((file, GwSource::File))
+        );
+        // Nothing anywhere.
+        assert_eq!(resolve_gateway_with(None, None, None).unwrap(), None);
+        // Empty values are treated as unset (not errors).
+        assert_eq!(
+            resolve_gateway_with(None, Some(String::new()), Some("  ".into())).unwrap(),
+            None
+        );
+        // Invalid configured values error out - no silent fallthrough
+        // to a lower-priority source.
+        assert!(resolve_gateway_with(None, Some("junk".into()), file_s()).is_err());
+        assert!(resolve_gateway_with(None, None, Some("junk".into())).is_err());
+        assert!(resolve_gateway_with(None, env_s(), Some("junk".into())).is_ok());
     }
 
     #[test]

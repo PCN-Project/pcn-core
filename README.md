@@ -111,6 +111,21 @@ pcn ping --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
     --count 4 --timeout-ms 1000 --interval-ms 1000
 ```
 
+`--via` names the physical first hop (`HOST:PORT` UDP endpoint). To
+avoid repeating it, `pcn` resolves a default gateway in this order:
+`--via` > `PCN_VIA` env > `~/.pcn/gateway` file. Configure once:
+
+```bash
+pcn gateway set 127.0.0.1:41002   # writes ~/.pcn/gateway
+pcn gateway                       # shows the effective gateway + source
+pcn ping --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
+    --target pcn~1000-0000-00002  # no --via needed now
+```
+
+`pcn recv` also resolves the chain for its ACK endpoint; with no
+gateway configured anywhere it stays a passive sink. A configured but
+invalid value is an error - never a silent fallback.
+
 Each `reply from pcn~...` line reports RTT on a monotonic clock; the
 summary prints sent/received/lost, loss percentage and rtt min/avg/max.
 
