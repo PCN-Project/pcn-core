@@ -46,7 +46,7 @@ pcn-core/
 | `pcn-transport` + `pcn-transport-udp` | `Transport` trait (send/recv/timeout/local endpoint) and a synchronous `UdpSocket` implementation |
 | `pcn-packet` | Typed `Header`/`Packet`/`PacketType`, deterministic big-endian encoding, validating parser with typed `ParseError`, `PacketBuilder` with `BuildError` |
 | `pcnd` | `pcnd run` starts a real node: UDP receive loop, static routes, local delivery, forwarding with Hop Limit decrement, ECHO_REQUEST -> ECHO_REPLY responder. `selftest`/`check` still work |
-| `pcn` | `pcn ping` sends real PCN ECHO_REQUESTs over UDP through a configured next hop, matches replies (type + both addresses + packet_id), reports RTT and loss |
+| `pcn` | `pcn ping` sends real PCN ECHO_REQUESTs over UDP through a configured next hop, matches replies (type + both addresses + packet_id), reports RTT and loss. `pcn send`/`pcn recv` move UTF-8 DATA payloads the same way |
 
 ### Planned (not created - no empty crates)
 
@@ -113,6 +113,26 @@ pcn ping --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
 
 Each `reply from pcn~...` line reports RTT on a monotonic clock; the
 summary prints sent/received/lost, loss percentage and rtt min/avg/max.
+
+Send DATA (application payload) instead of a probe:
+
+```bash
+# B - receive DATA for its address (plain client, no daemon needed)
+pcn recv --listen 127.0.0.1:41003 --source pcn~1000-0000-00002
+
+# A - one DATA packet through R1 to B
+pcn send --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
+    --target pcn~1000-0000-00002 --via 127.0.0.1:41002 \
+    --message "Zażółć gęślą jaźń"
+```
+
+`pcn recv` prints `data from pcn~...: <payload>` for DATA packets
+addressed to `--source`; `pcnd` nodes also log delivered payloads as
+`delivered: ... "text"`. DATA is **unacknowledged**: `send` exiting 0
+only means the datagram left the socket - there is no ACK,
+retransmission, or ordering. Delivery is proven by the receiver's
+output, not the sender's exit code.
+
 Inter-node transport is UDP only; there is no dynamic routing,
 cryptographic neighbor identity, or PCN Global.
 

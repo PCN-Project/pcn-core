@@ -1,156 +1,11 @@
 //! End-to-end tests for `pcn ping`: a real `pcn` client process plus
 //! real `pcnd` node processes exchanging PCN ECHO packets over UDP
-//! loopback.
-//!
-//! The Node/expect harness mirrors `apps/pcnd/tests/node_e2e.rs` - test
-//! helpers cannot be shared across crates without a dedicated
-//! test-support crate, so the ~70 lines are deliberately duplicated as
-//! the least invasive option.
-//!
-//! Ports are pre-allocated with the bind-0-then-release trick (standard
-//! TOCTOU caveat, far better than fixed ports). All addresses are
-//! private PCN type 1.
+//! loopback. The process harness lives in `tests/common/`.
 
-use std::io::{BufRead, BufReader};
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
-use std::process::{Child, ChildStdout, Command, Output, Stdio};
-use std::sync::mpsc::{channel, Receiver};
-use std::thread;
+mod common;
+
+use common::*;
 use std::time::{Duration, Instant};
-
-const TIMEOUT: Duration = Duration::from_secs(15);
-
-/// A's, R1's and B's PCN addresses (private type, values 1/9/2).
-const A_ADDR: &str = "pcn~1000-0000-00001";
-const R1_ADDR: &str = "pcn~1000-0000-00009";
-const B_ADDR: &str = "pcn~1000-0000-00002";
-
-/// Grabs a currently-free UDP port. Small inherent race vs. another
-/// process grabbing it first; acceptable and standard for tests.
-fn free_port() -> u16 {
-    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
-fn ep(port: u16) -> SocketAddr {
-    SocketAddr::from(([127, 0, 0, 1], port))
-}
-
-/// Path to a sibling workspace binary (`pcnd`) next to this package's
-/// `pcn` binary. `CARGO_BIN_EXE_<name>` is only defined for binaries of
-/// the package under test, so cross-binary e2e resolves by directory.
-fn sibling_bin(name: &str) -> std::path::PathBuf {
-    let own = std::path::PathBuf::from(env!("CARGO_BIN_EXE_pcn"));
-    let path = own.parent().expect("target dir").join(name);
-    assert!(
-        path.exists(),
-        "{name} binary not found at {} - build the workspace first (cargo build --workspace)",
-        path.display()
-    );
-    path
-}
-
-/// A running `pcnd` child with stdout piped into a channel.
-struct Node {
-    child: Child,
-    rx: Receiver<String>,
-}
-
-impl Node {
-    fn spawn(args: &[String]) -> Self {
-        let mut child = Command::new(sibling_bin("pcnd"))
-            .arg("run")
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn pcnd");
-        let stdout: ChildStdout = child.stdout.take().expect("piped stdout");
-        let (tx, rx) = channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                if tx.send(line.expect("node stdout line")).is_err() {
-                    break;
-                }
-            }
-        });
-        Self { child, rx }
-    }
-
-    /// Waits for `listening on ...` - proves the node bound its socket.
-    fn ready(&self, deadline: Instant) {
-        expect(self, deadline, |line| {
-            line.starts_with("listening on ").then_some(())
-        });
-    }
-
-    /// Waits for a stdout line matching `pred` before `deadline`.
-    fn expect_line(&self, deadline: Instant, pred: impl Fn(&str) -> bool) -> String {
-        expect(self, deadline, |line| {
-            if pred(line) {
-                Some(line.to_string())
-            } else {
-                None
-            }
-        })
-    }
-}
-
-fn expect<T>(node: &Node, deadline: Instant, mut pred: impl FnMut(&str) -> Option<T>) -> T {
-    loop {
-        let left = deadline
-            .checked_duration_since(Instant::now())
-            .expect("deadline exceeded waiting for pcnd output");
-        match node.rx.recv_timeout(left) {
-            Ok(line) => {
-                if let Some(v) = pred(&line) {
-                    return v;
-                }
-            }
-            Err(_) => panic!("timeout waiting for pcnd output"),
-        }
-    }
-}
-
-impl Drop for Node {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// Runs `pcn ping` to completion with a hard upper bound; a wedged
-/// client is killed so the test can report instead of hanging forever.
-fn run_ping(args: &[String], limit: Duration) -> Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_pcn"))
-        .arg("ping")
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn pcn");
-
-    let deadline = Instant::now() + limit;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child.wait_with_output().expect("collect output");
-            }
-            Ok(None) => {
-                if Instant::now() > deadline {
-                    let _ = child.kill();
-                    let _ = child.wait_with_output();
-                    panic!("pcn ping exceeded {limit:?}");
-                }
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(e) => panic!("pcn wait failed: {e}"),
-        }
-    }
-}
 
 #[test]
 fn ping_round_trip_through_router() {
@@ -158,7 +13,7 @@ fn ping_round_trip_through_router() {
     let (a_port, r1_port, b_port) = (free_port(), free_port(), free_port());
 
     // B: destination node; route back to A goes via R1's endpoint.
-    let b = Node::spawn(&[
+    let b = node(&[
         "--listen".into(),
         ep(b_port).to_string(),
         "--address".into(),
@@ -169,7 +24,7 @@ fn ping_round_trip_through_router() {
         format!("{A_ADDR}=1"),
     ]);
     // R1: router with routes in both directions (to B and back to A).
-    let r1 = Node::spawn(&[
+    let r1 = node(&[
         "--listen".into(),
         ep(r1_port).to_string(),
         "--address".into(),
@@ -187,7 +42,8 @@ fn ping_round_trip_through_router() {
     r1.ready(deadline);
 
     // A: the ping client, bound to a_port so R1's return route resolves.
-    let out = run_ping(
+    let out = run_pcn(
+        "ping",
         &[
             "--listen".into(),
             ep(a_port).to_string(),
@@ -240,7 +96,7 @@ fn ping_times_out_when_return_route_missing() {
     let (a_port, r1_port, b_port) = (free_port(), free_port(), free_port());
 
     // B replies toward A via R1, exactly as before.
-    let b = Node::spawn(&[
+    let b = node(&[
         "--listen".into(),
         ep(b_port).to_string(),
         "--address".into(),
@@ -253,7 +109,7 @@ fn ping_times_out_when_return_route_missing() {
     // R1 knows only the route to B - NO route back to A. The reply
     // reaching R1 must be dropped there; it must not bounce straight to
     // A's socket just because A sent the original datagram.
-    let r1 = Node::spawn(&[
+    let r1 = node(&[
         "--listen".into(),
         ep(r1_port).to_string(),
         "--address".into(),
@@ -266,7 +122,8 @@ fn ping_times_out_when_return_route_missing() {
     b.ready(deadline);
     r1.ready(deadline);
 
-    let out = run_ping(
+    let out = run_pcn(
+        "ping",
         &[
             "--listen".into(),
             ep(a_port).to_string(),

@@ -173,6 +173,25 @@ fn respond(config: &NodeConfig, request: Packet) -> Action {
     }
 }
 
+/// Renders payload bytes for logs: UTF-8 text in quotes, anything else
+/// as hex (capped at 64 bytes displayed).
+fn fmt_payload(payload: &[u8]) -> String {
+    use std::fmt::Write as _;
+    match std::str::from_utf8(payload) {
+        Ok(text) => format!("\"{text}\""),
+        Err(_) => {
+            let mut s = String::from("0x");
+            for &b in payload.iter().take(64) {
+                let _ = write!(s, "{b:02x}");
+            }
+            if payload.len() > 64 {
+                let _ = write!(s, "..(+{} B)", payload.len() - 64);
+            }
+            s
+        }
+    }
+}
+
 /// `pcnd run ...` entry point: parses arguments, binds the socket, and
 /// serves until the process is signalled. Returns the exit code.
 pub fn run_command(args: &[String]) -> ExitCode {
@@ -223,12 +242,13 @@ pub fn run(config: &NodeConfig, running: &AtomicBool) -> io::Result<()> {
                 Action::Deliver(p) => {
                     let h = p.header();
                     println!(
-                        "delivered: {} -> {} type={} id=0x{:08x} {} B payload",
+                        "delivered: {} -> {} type={} id=0x{:08x} {} B payload {}",
                         h.source(),
                         h.destination(),
                         h.packet_type().name(),
                         h.packet_id(),
-                        p.payload().len()
+                        p.payload().len(),
+                        fmt_payload(p.payload())
                     );
                 }
                 Action::Send { packet, endpoint } => {

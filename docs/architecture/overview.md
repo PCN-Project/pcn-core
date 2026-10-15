@@ -62,16 +62,18 @@ Built now:
   deliver/forward/drop decision with hop-limit handling.
 - `pcnd` - node daemon: `run` binds a UDP socket and drives the routing
   decision loop; answers locally-delivered ECHO_REQUEST with an
-  ECHO_REPLY sent back through the route table; `selftest`/`check`
-  remain.
-- `pcn` - client CLI: `pcn ping` probes a target PCN address with
-  sequential ECHO_REQUESTs via a configured first hop and reports RTT
-  and loss.
+  ECHO_REPLY sent back through the route table; locally-delivered DATA
+  payloads reach the application-facing interface (stdout, one
+  `delivered:` line each); `selftest`/`check` remain.
+- `pcn` - client CLI: `ping` probes with sequential ECHO_REQUESTs;
+  `send`/`recv` move unacknowledged DATA payloads (no ACK,
+  retransmission, or ordering - best-effort delivery).
 - Provisional specs under `docs/protocol/`.
 
-Explicitly not built: dynamic routing, identity crypto, registry,
-policy, NAT traversal, Android packaging, and any semantics for DATA,
-CONTROL, or ERROR payloads. See the README status table.
+Explicitly not built: delivery acknowledgments, dynamic routing,
+identity crypto, registry, policy, NAT traversal, Android packaging,
+and any semantics for CONTROL or ERROR payloads. See the README status
+table.
 
 ## 4. Platforms
 
