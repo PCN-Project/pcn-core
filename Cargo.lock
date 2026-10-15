@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "pcn-address",
  "pcn-packet",
+ "pcn-registry-proto",
  "pcn-transport",
  "pcn-transport-udp",
 ]
@@ -18,6 +19,21 @@ version = "0.1.0"
 
 [[package]]
 name = "pcn-packet"
+version = "0.1.0"
+dependencies = [
+ "pcn-address",
+]
+
+[[package]]
+name = "pcn-registry"
+version = "0.1.0"
+dependencies = [
+ "pcn-address",
+ "pcn-registry-proto",
+]
+
+[[package]]
+name = "pcn-registry-proto"
 version = "0.1.0"
 dependencies = [
  "pcn-address",

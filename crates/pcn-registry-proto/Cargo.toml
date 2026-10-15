@@ -1,0 +1,13 @@
+[package]
+name = "pcn-registry-proto"
+version = "0.1.0"
+description = "PCN address registry v0.1: framed TCP protocol, name validation, requests and responses"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pcn-address = { path = "../pcn-address", version = "0.1.0" }

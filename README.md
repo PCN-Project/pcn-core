@@ -126,6 +126,30 @@ pcn ping --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
 gateway configured anywhere it stays a passive sink. A configured but
 invalid value is an error - never a silent fallback.
 
+## Address registry (v0.1)
+
+`pcn-registry` is a small TCP daemon that hands out **private**
+(type-1) PCN addresses and remembers the name → address allocation in
+an atomically-rewritten state file:
+
+```bash
+pcn-registry --listen 127.0.0.1:47000 --state ./registry.db
+
+pcn address request --registry 127.0.0.1:47000 --name fedora-pc
+# fedora-pc -> pcn~1000-0000-00001   (also stored in ~/.pcn/address)
+pcn address show                   # local record, no network
+pcn address lookup --registry 127.0.0.1:47000 --name fedora-pc
+pcn address list   --registry 127.0.0.1:47000
+pcn address reserve --registry 127.0.0.1:47000 \
+    --name server --address pcn~1000-0000-00009
+```
+
+The registry endpoint resolves like the gateway: `--registry` >
+`PCN_REGISTRY` > `~/.pcn/registry`. Allocations are deterministic
+(lowest free value in `--range-min..=--range-max`), idempotent per
+name, survive restarts, and never give one address to two names.
+Protocol details: `docs/protocol/registry-v01.md`.
+
 Each `reply from pcn~...` line reports RTT on a monotonic clock; the
 summary prints sent/received/lost, loss percentage and rtt min/avg/max.
 

@@ -1,0 +1,14 @@
+[package]
+name = "pcn-registry"
+version = "0.1.0"
+description = "PCN address registry daemon: persistent TCP-served name->address allocations"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pcn-address = { path = "../../crates/pcn-address", version = "0.1.0" }
+pcn-registry-proto = { path = "../../crates/pcn-registry-proto", version = "0.1.0" }

@@ -47,11 +47,11 @@ fn acked_rtt_ms(line: &str) -> f64 {
 #[test]
 fn lost_ack_triggers_retry_receiver_dedups() {
     let deadline = Instant::now() + TIMEOUT;
-    let (a_port, b_port, proxy_port) = (free_port(), free_port(), free_port());
+    let (a_port, b_port) = (free_port(), free_port());
 
     // Return path: B's route to A goes through the fault proxy, which
     // drops the first ACK (seq 0 on this leg) and forwards the retry's.
-    let _proxy = udp_proxy(ep(proxy_port), ep(a_port), |seq, _bytes| {
+    let (proxy_port, _proxy) = udp_proxy(ep(a_port), |seq, _bytes| {
         if seq == 0 {
             Fault::Drop
         } else {
@@ -109,9 +109,9 @@ fn lost_ack_triggers_retry_receiver_dedups() {
 /// the failure honestly.
 #[test]
 fn lost_data_reports_timeout_after_bounded_retries() {
-    let (a_port, b_port, proxy_port) = (free_port(), free_port(), free_port());
+    let (a_port, b_port) = (free_port(), free_port());
 
-    let _proxy = udp_proxy(ep(proxy_port), ep(b_port), |_seq, bytes| {
+    let (proxy_port, _proxy) = udp_proxy(ep(b_port), |_seq, bytes| {
         if is_type(bytes, PacketType::Data) {
             Fault::Drop
         } else {
@@ -162,10 +162,10 @@ fn lost_data_reports_timeout_after_bounded_retries() {
 #[test]
 fn unrelated_ack_in_flight_is_ignored() {
     let deadline = Instant::now() + TIMEOUT;
-    let (a_port, b_port, proxy_port) = (free_port(), free_port(), free_port());
+    let (a_port, b_port) = (free_port(), free_port());
 
     // Return leg through a proxy that delays every ACK by 400 ms.
-    let _proxy = udp_proxy(ep(proxy_port), ep(a_port), |_seq, bytes| {
+    let (proxy_port, _proxy) = udp_proxy(ep(a_port), |_seq, bytes| {
         if is_type(bytes, PacketType::Ack) {
             Fault::Delay(Duration::from_millis(400))
         } else {
@@ -240,9 +240,9 @@ fn unrelated_ack_in_flight_is_ignored() {
 #[test]
 fn duplicated_data_is_suppressed() {
     let deadline = Instant::now() + TIMEOUT;
-    let (a_port, b_port, proxy_port) = (free_port(), free_port(), free_port());
+    let (a_port, b_port) = (free_port(), free_port());
 
-    let _proxy = udp_proxy(ep(proxy_port), ep(b_port), |_seq, bytes| {
+    let (proxy_port, _proxy) = udp_proxy(ep(b_port), |_seq, bytes| {
         if is_type(bytes, PacketType::Data) {
             Fault::Duplicate
         } else {

@@ -18,11 +18,13 @@ use std::time::{Duration, Instant};
 
 pub const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Common private-type PCN test addresses (values 1/9/2).
+/// Common private-type PCN test addresses (values 1/9/2); not every
+/// test binary uses them all.
+#[allow(dead_code)]
 pub const A_ADDR: &str = "pcn~1000-0000-00001";
-// Used by router-topology tests; not every test binary needs it.
 #[allow(dead_code)]
 pub const R1_ADDR: &str = "pcn~1000-0000-00009";
+#[allow(dead_code)]
 pub const B_ADDR: &str = "pcn~1000-0000-00002";
 
 /// Grabs a currently-free UDP port.
@@ -39,14 +41,25 @@ pub fn ep(port: u16) -> SocketAddr {
 }
 
 /// Path to a workspace binary next to this package's `pcn` binary.
+/// `cargo test` only produces `deps/` test harnesses for sibling
+/// packages, so a missing binary is built on demand once.
 pub fn sibling_bin(name: &str) -> PathBuf {
     let own = PathBuf::from(env!("CARGO_BIN_EXE_pcn"));
     let path = own.parent().expect("target dir").join(name);
-    assert!(
-        path.exists(),
-        "{name} binary not found at {} - build the workspace first (cargo build --workspace)",
-        path.display()
-    );
+    if !path.exists() {
+        // `cargo build --workspace` covers pcnd AND pcn-registry; the
+        // profile dir layout stays the same for workspace members.
+        let status = Command::new("cargo")
+            .args(["build", "--workspace"])
+            .status()
+            .expect("spawn cargo build");
+        assert!(status.success(), "cargo build --workspace failed");
+        assert!(
+            path.exists(),
+            "{name} binary not found at {} even after cargo build",
+            path.display()
+        );
+    }
     path
 }
 
@@ -125,7 +138,9 @@ impl Drop for Proc {
     }
 }
 
-/// Spawns `pcnd run` with the given flags.
+/// Spawns `pcnd run` with the given flags. Unused by test binaries that
+/// don't start nodes (e.g. registry tests).
+#[allow(dead_code)]
 pub fn node(args: &[String]) -> Proc {
     let mut full = vec!["run".to_string()];
     full.extend(args.iter().cloned());
@@ -200,7 +215,11 @@ pub enum Fault {
     Delay(Duration),
 }
 
-/// Spawns a deterministic one-way UDP relay: `listen` -> `dest`.
+/// Spawns a deterministic one-way UDP relay on an ephemeral port and
+/// returns `(bound_port, handle)`. Binding to `:0` here - instead of a
+/// caller-picked `free_port()` - closes the release/rebind race that a
+/// parallel test could win (AddrInUse flakes).
+///
 /// `rule(seq, payload)` decides each datagram's fate in arrival order
 /// (`seq` counts received datagrams from 0). Test-only: the proxy does
 /// not parse PCN itself - tests pattern-match on `pcn_packet` or `seq`.
@@ -209,12 +228,12 @@ pub enum Fault {
 /// handle detaches it, which is fine for bounded test lifetimes.
 #[allow(dead_code)]
 pub fn udp_proxy(
-    listen: SocketAddr,
     dest: SocketAddr,
     mut rule: impl FnMut(usize, &[u8]) -> Fault + Send + 'static,
-) -> thread::JoinHandle<()> {
-    let sock = UdpSocket::bind(listen).expect("proxy bind failed");
-    thread::spawn(move || {
+) -> (u16, thread::JoinHandle<()>) {
+    let sock = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("proxy bind failed");
+    let port = sock.local_addr().expect("proxy addr").port();
+    let handle = thread::spawn(move || {
         let mut seq = 0usize;
         let mut buf = vec![0u8; MAX_PACKET_LEN];
         loop {
@@ -237,5 +256,6 @@ pub fn udp_proxy(
             }
             seq += 1;
         }
-    })
+    });
+    (port, handle)
 }

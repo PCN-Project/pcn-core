@@ -12,11 +12,12 @@
 
 use pcn_address::Address;
 use pcn_packet::{Packet, PacketType, MAX_PACKET_LEN, PROTOCOL_VERSION};
+use pcn_registry_proto::{read_frame, write_frame, Request, Response};
 use pcn_transport::Transport;
 use pcn_transport_udp::UdpTransport;
 use std::collections::HashSet;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -32,6 +33,7 @@ COMMANDS:
     send            Send a DATA packet (UTF-8 message) to a PCN address
     recv            Receive DATA packets addressed to a local PCN address
     gateway         Show or set the default gateway
+    address         Request/inspect a registered PCN address
     version         Print version information";
 
 const PING_USAGE: &str = "\
@@ -117,6 +119,27 @@ A gateway is a physical UDP endpoint (HOST:PORT), not a PCN address.
 Precedence for every command that needs one:
     --via flag > $PCN_VIA > ~/.pcn/gateway file";
 
+const ADDRESS_USAGE: &str = "\
+pcn address - registered PCN address management
+
+USAGE:
+    pcn address request --name NAME [--address ADDR]
+    pcn address lookup (--name NAME | --address ADDR)
+    pcn address list
+    pcn address reserve --name NAME --address ADDR
+    pcn address show
+
+OPTIONS:
+    --registry HOST:PORT   registry endpoint (default: $PCN_REGISTRY,
+                           then ~/.pcn/registry)
+
+'request' allocates (or returns the existing) private address for
+NAME and stores it in ~/.pcn/address; 'show' prints that local record
+without contacting the registry. 'reserve' strictly claims an exact
+address for a new name. Repeating 'request' is idempotent; a name
+holding a different address than requested is a conflict, not a
+reallocation.";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -124,6 +147,7 @@ fn main() -> ExitCode {
         Some("send") => send_command(&args[1..]),
         Some("recv") => recv_command(&args[1..]),
         Some("gateway") => gateway_command(&args[1..]),
+        Some("address") => address_command(&args[1..]),
         Some("version") | Some("--version") | Some("-V") => {
             println!("pcn (wire version {PROTOCOL_VERSION})");
             ExitCode::SUCCESS
@@ -789,6 +813,10 @@ fn parse_send_args(args: &[String]) -> Result<SendConfig, String> {
 const NO_GATEWAY_HINT: &str = "configure one with: --via HOST:PORT, \
     PCN_VIA=HOST:PORT, or 'pcn gateway set HOST:PORT'";
 
+const NO_REGISTRY_HINT: &str = "no registry configured: pass \
+    --registry HOST:PORT, set PCN_REGISTRY=HOST:PORT, or write \
+    HOST:PORT to ~/.pcn/registry";
+
 /// Where the effective gateway came from (for `pcn gateway` output).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GwSource {
@@ -810,15 +838,78 @@ impl GwSource {
     }
 }
 
-/// `~/.pcn/gateway`; `None` when no home directory can be determined.
-fn gateway_file_path() -> Option<PathBuf> {
-    std::env::home_dir().map(|h| h.join(".pcn").join("gateway"))
+/// The generic precedence chain: explicit flag > env > file. Injected
+/// env/file contents keep this testable without touching the real
+/// environment or HOME.
+///
+/// `Ok(Some)` = resolved, `Ok(None)` = nothing configured (callers
+/// decide whether that is an error), `Err` = a configured value was
+/// invalid. A present-but-bad env or file value is an error, never a
+/// silent fallthrough to a lower-priority source.
+fn resolve_endpoint_with(
+    explicit: Option<SocketAddr>,
+    env_label: &'static str,
+    env_val: Option<String>,
+    file_label: &'static str,
+    file_val: Option<String>,
+) -> Result<Option<(SocketAddr, GwSource)>, String> {
+    if let Some(ep) = explicit {
+        return Ok(Some((ep, GwSource::Cli)));
+    }
+    if let Some(raw) = env_val {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            return parse_endpoint(raw, env_label).map(|ep| Some((ep, GwSource::Env)));
+        }
+    }
+    if let Some(raw) = file_val {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            return parse_endpoint(raw, file_label).map(|ep| Some((ep, GwSource::File)));
+        }
+    }
+    Ok(None)
 }
 
-/// `Ok(None)` = file missing or no HOME; `Err` = present but unreadable
-/// (permissions etc. - reported, not silently ignored).
-fn read_gateway_file() -> Result<Option<String>, String> {
-    let Some(path) = gateway_file_path() else {
+/// Gateway variant of [`resolve_endpoint_with`] - exercised by unit
+/// tests; the binary itself goes through [`resolve_gateway`].
+#[cfg(test)]
+fn resolve_gateway_with(
+    explicit: Option<SocketAddr>,
+    env_val: Option<String>,
+    file_val: Option<String>,
+) -> Result<Option<(SocketAddr, GwSource)>, String> {
+    resolve_endpoint_with(explicit, "PCN_VIA", env_val, "~/.pcn/gateway", file_val)
+}
+
+/// Reads the real environment and config file, then applies
+/// [`resolve_endpoint_with`] for the gateway.
+fn resolve_gateway(explicit: Option<SocketAddr>) -> Result<Option<(SocketAddr, GwSource)>, String> {
+    let env_val = std::env::var("PCN_VIA").ok();
+    let file_val = read_pcn_file("gateway")?;
+    resolve_endpoint_with(explicit, "PCN_VIA", env_val, "~/.pcn/gateway", file_val)
+}
+
+/// Registry endpoint resolution: `--registry` > `PCN_REGISTRY` >
+/// `~/.pcn/registry`.
+fn resolve_registry(
+    explicit: Option<SocketAddr>,
+) -> Result<Option<(SocketAddr, GwSource)>, String> {
+    let env_val = std::env::var("PCN_REGISTRY").ok();
+    let file_val = read_pcn_file("registry")?;
+    resolve_endpoint_with(
+        explicit,
+        "PCN_REGISTRY",
+        env_val,
+        "~/.pcn/registry",
+        file_val,
+    )
+}
+
+/// Reads `~/.pcn/<name>`; `Ok(None)` = missing or no HOME, `Err` =
+/// present but unreadable (reported, not silently ignored).
+fn read_pcn_file(name: &str) -> Result<Option<String>, String> {
+    let Some(path) = pcn_file_path(name) else {
         return Ok(None);
     };
     match std::fs::read_to_string(&path) {
@@ -828,42 +919,9 @@ fn read_gateway_file() -> Result<Option<String>, String> {
     }
 }
 
-/// The pure precedence chain - injected env/file contents keep this
-/// testable without touching the real environment or HOME.
-///
-/// `Ok(Some)` = resolved, `Ok(None)` = nothing configured (callers
-/// decide whether that is an error - it is for ping/send, not recv),
-/// `Err` = a configured value was invalid. A present-but-bad env or
-/// file value is an error, never a silent fallthrough.
-fn resolve_gateway_with(
-    explicit: Option<SocketAddr>,
-    env_val: Option<String>,
-    file_val: Option<String>,
-) -> Result<Option<(SocketAddr, GwSource)>, String> {
-    if let Some(ep) = explicit {
-        return Ok(Some((ep, GwSource::Cli)));
-    }
-    if let Some(raw) = env_val {
-        let raw = raw.trim();
-        if !raw.is_empty() {
-            return parse_endpoint(raw, "PCN_VIA").map(|ep| Some((ep, GwSource::Env)));
-        }
-    }
-    if let Some(raw) = file_val {
-        let raw = raw.trim();
-        if !raw.is_empty() {
-            return parse_endpoint(raw, "~/.pcn/gateway").map(|ep| Some((ep, GwSource::File)));
-        }
-    }
-    Ok(None)
-}
-
-/// Reads the real environment and config file, then applies
-/// [`resolve_gateway_with`].
-fn resolve_gateway(explicit: Option<SocketAddr>) -> Result<Option<(SocketAddr, GwSource)>, String> {
-    let env_val = std::env::var("PCN_VIA").ok();
-    let file_val = read_gateway_file()?;
-    resolve_gateway_with(explicit, env_val, file_val)
+/// `~/.pcn/<name>`; `None` when no home directory can be determined.
+fn pcn_file_path(name: &str) -> Option<PathBuf> {
+    std::env::home_dir().map(|h| h.join(".pcn").join(name))
 }
 
 /// For ping/send a gateway is mandatory: resolution must produce one,
@@ -878,13 +936,19 @@ fn require_gateway(explicit: Option<SocketAddr>) -> Result<SocketAddr, String> {
 /// `pcn gateway set H:P` - writes the endpoint to ~/.pcn/gateway,
 /// creating the directory if needed.
 fn write_gateway_file(ep: SocketAddr) -> Result<PathBuf, String> {
-    let path = gateway_file_path().ok_or("cannot determine home directory for ~/.pcn/gateway")?;
+    write_pcn_file("gateway", &format!("{ep}\n"))
+}
+
+/// Writes `content` to `~/.pcn/<name>`, creating the directory if
+/// needed. Returns the path written.
+fn write_pcn_file(name: &str, content: &str) -> Result<PathBuf, String> {
+    let path = pcn_file_path(name)
+        .ok_or_else(|| format!("cannot determine home directory for ~/.pcn/{name}"))?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
-    std::fs::write(&path, format!("{ep}\n"))
-        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    std::fs::write(&path, content).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(path)
 }
 
@@ -935,6 +999,188 @@ fn gateway_command(args: &[String]) -> ExitCode {
             eprintln!("error: unknown gateway argument '{other}'");
             eprintln!("{GATEWAY_USAGE}");
             ExitCode::from(2)
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// `pcn address` - registry client
+// ------------------------------------------------------------------
+
+/// One TCP round-trip: send `req`, read one response frame. Both ends
+/// bounded by a socket timeout; a closed or malformed stream errors.
+fn registry_call(registry: SocketAddr, req: &Request) -> Result<Response, String> {
+    let mut stream = TcpStream::connect_timeout(&registry, Duration::from_secs(5))
+        .map_err(|e| format!("cannot reach registry {registry}: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| format!("set read timeout: {e}"))?;
+    write_frame(&mut stream, &req.encode()).map_err(|e| format!("send to registry: {e}"))?;
+    let text = read_frame(&mut stream)
+        .map_err(|e| format!("read from registry: {e}"))?
+        .ok_or("registry closed the connection without a reply")?;
+    Response::parse(&text).map_err(|(code, msg)| format!("{code}: {msg}"))
+}
+
+/// Prints a response or converts an `err` into the exit-1 message.
+fn report(response: Result<Response, String>) -> Result<String, String> {
+    match response {
+        Ok(Response::Registered { name, addr }) => Ok(format!("{name} -> {addr}")),
+        Ok(Response::Address(addr)) => Ok(format!("{addr}")),
+        Ok(Response::Name(name)) => Ok(name),
+        Ok(Response::List(entries)) => {
+            if entries.is_empty() {
+                Ok("(empty registry)".into())
+            } else {
+                Ok(entries
+                    .iter()
+                    .map(|(n, a)| format!("{n} {a}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"))
+            }
+        }
+        Ok(Response::Error { code, message }) => Err(format!("{code}: {message}")),
+        Err(msg) => Err(msg),
+    }
+}
+
+fn address_command(args: &[String]) -> ExitCode {
+    if args.is_empty() || args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{ADDRESS_USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let (sub, rest) = (args[0].as_str(), &args[1..]);
+
+    // Flags shared by the registry-talking subcommands.
+    let mut registry = None;
+    let mut name = None;
+    let mut addr = None;
+    let mut i = 0;
+    let bad_args = |msg: String| -> ExitCode {
+        eprintln!("error: {msg}");
+        ExitCode::from(2)
+    };
+    while i < rest.len() {
+        let (flag, inline) = match rest[i].split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f, Some(v)),
+            _ => (rest[i].as_str(), None),
+        };
+        let take = |i: &mut usize| -> Result<String, String> {
+            if let Some(v) = inline {
+                return Ok(v.to_string());
+            }
+            *i += 1;
+            rest.get(*i)
+                .cloned()
+                .ok_or_else(|| format!("option '{flag}' requires a value"))
+        };
+        match flag {
+            "--registry" => {
+                let v = match take(&mut i) {
+                    Ok(v) => v,
+                    Err(m) => return bad_args(m),
+                };
+                match parse_endpoint(&v, "--registry") {
+                    Ok(ep) => registry = Some(ep),
+                    Err(m) => return bad_args(m),
+                }
+            }
+            "--name" => {
+                let v = match take(&mut i) {
+                    Ok(v) => v,
+                    Err(m) => return bad_args(m),
+                };
+                name = Some(v);
+            }
+            "--address" => {
+                let v = match take(&mut i) {
+                    Ok(v) => v,
+                    Err(m) => return bad_args(m),
+                };
+                match v.parse::<Address>() {
+                    Ok(a) => addr = Some(a),
+                    Err(e) => return bad_args(format!("--address: '{v}': {e}")),
+                }
+            }
+            other => return bad_args(format!("unknown option '{other}'")),
+        }
+        i += 1;
+    }
+
+    match sub {
+        "show" => {
+            // Local only - the last address `request` wrote.
+            match read_pcn_file("address") {
+                Ok(Some(text)) => {
+                    println!("{}", text.trim());
+                    ExitCode::SUCCESS
+                }
+                Ok(None) => {
+                    println!("no local address (run 'pcn address request' first)");
+                    ExitCode::SUCCESS
+                }
+                Err(m) => {
+                    eprintln!("error: {m}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        _ => {
+            // Registry endpoint is required for everything else.
+            let reg = match resolve_registry(registry) {
+                Ok(Some((ep, _))) => ep,
+                Ok(None) => {
+                    eprintln!("error: {NO_REGISTRY_HINT}");
+                    return ExitCode::FAILURE;
+                }
+                Err(m) => {
+                    eprintln!("error: {m}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let req = match sub {
+                "request" => Request::Alloc {
+                    name: match name {
+                        Some(n) => n,
+                        None => return bad_args("request requires --name NAME".into()),
+                    },
+                    preferred: addr,
+                },
+                "reserve" => match (name, addr) {
+                    (Some(n), Some(a)) => Request::Reserve { name: n, addr: a },
+                    _ => return bad_args("reserve requires --name NAME and --address ADDR".into()),
+                },
+                "lookup" => match (name, addr) {
+                    (Some(n), None) => Request::Lookup { name: n },
+                    (None, Some(a)) => Request::WhoIs { addr: a },
+                    _ => return bad_args("lookup requires exactly one of --name/--address".into()),
+                },
+                "list" => Request::List,
+                other => return bad_args(format!("unknown address subcommand '{other}'")),
+            };
+            // One round-trip; a successful request also persists the
+            // local `~/.pcn/address` record for `pcn address show`.
+            match registry_call(reg, &req) {
+                Ok(resp) => {
+                    if let Response::Registered { name, addr } = &resp {
+                        let _ = write_pcn_file("address", &format!("{name} {addr}\n"));
+                    }
+                    match report(Ok(resp)) {
+                        Ok(text) => {
+                            println!("{text}");
+                            ExitCode::SUCCESS
+                        }
+                        Err(m) => {
+                            eprintln!("error: {m}");
+                            ExitCode::FAILURE
+                        }
+                    }
+                }
+                Err(m) => {
+                    eprintln!("error: {m}");
+                    ExitCode::FAILURE
+                }
+            }
         }
     }
 }

@@ -12,5 +12,6 @@ workspace = true
 [dependencies]
 pcn-address = { path = "../../crates/pcn-address", version = "0.1.0" }
 pcn-packet = { path = "../../crates/pcn-packet", version = "0.1.0" }
+pcn-registry-proto = { path = "../../crates/pcn-registry-proto", version = "0.1.0" }
 pcn-transport = { path = "../../crates/pcn-transport", version = "0.1.0" }
 pcn-transport-udp = { path = "../../crates/pcn-transport-udp", version = "0.1.0" }
