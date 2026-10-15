@@ -22,7 +22,7 @@ pub(crate) const SUPPORTED_MASK: u16 = 0x0000;
 pub struct Flags(u16);
 
 impl Flags {
-    /// No flags set — the only legal value in v0.1.
+    /// No flags set - the only legal value in v0.1.
     pub const NONE: Self = Self(0);
 
     /// Builds a flags value from raw bits without checking them.

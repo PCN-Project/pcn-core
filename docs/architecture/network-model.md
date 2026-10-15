@@ -27,7 +27,7 @@ Root Authority
 ```
 
 - The **Root Authority** delegates *bounded* permissions to registered
-  operators — e.g. the right to advertise specific global address ranges
+  operators - e.g. the right to advertise specific global address ranges
   or operate registries.
 - **Operators** administer allocations for the domains they serve.
 - **Local administrators** keep full control of their private domains.
@@ -66,7 +66,7 @@ Root Authority
 
 ## 5. Trust boundaries
 
-- Between node and transport: none — endpoints are untrusted input.
+- Between node and transport: none - endpoints are untrusted input.
 - Between domain and PCN Global: operator authorization, bounded and
   revocable.
 - Between private domain internals and outsiders: the domain's own

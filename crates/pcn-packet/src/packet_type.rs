@@ -9,16 +9,16 @@
 /// Wire encoding is the `u8` returned by [`PacketType::to_u8`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PacketType {
-    /// `0x01` — carries upper-layer data.
+    /// `0x01` - carries upper-layer data.
     Data,
-    /// `0x02` — liveness/MTU probe; the receiver should answer with
+    /// `0x02` - liveness/MTU probe; the receiver should answer with
     /// [`PacketType::EchoReply`].
     EchoRequest,
-    /// `0x03` — answer to [`PacketType::EchoRequest`].
+    /// `0x03` - answer to [`PacketType::EchoRequest`].
     EchoReply,
-    /// `0x04` — reports a delivery or processing failure.
+    /// `0x04` - reports a delivery or processing failure.
     Error,
-    /// `0x05` — control-plane message (routing, administration).
+    /// `0x05` - control-plane message (routing, administration).
     Control,
 }
 

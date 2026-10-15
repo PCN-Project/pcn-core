@@ -1,24 +1,24 @@
-//! `pcnd` — the PCN node daemon.
+//! `pcnd` - the PCN node daemon.
 //!
 //! Milestone 0.1 scope: the daemon does **not** open sockets or join a
 //! network yet. It exists to prove the workspace builds and to provide
 //! two honest, testable functions:
 //!
-//! * `pcnd selftest` — exercises the `pcn-packet` codec (encode, parse,
+//! * `pcnd selftest` - exercises the `pcn-packet` codec (encode, parse,
 //!   and each validation rejection path) and reports pass/fail.
-//! * `pcnd check <hex>` — decodes a datagram supplied as hexadecimal and
+//! * `pcnd check <hex>` - decodes a datagram supplied as hexadecimal and
 //!   prints the header fields, or the precise reason it is invalid. This
 //!   is the same code path the future UDP transport will feed.
 //!
 //! Network services (UDP transport, routing, registry) are documented as
 //! planned components in the repository README.
 
-use pcn_address::Address;
+use pcn_address::{Address, AddressType};
 use pcn_packet::{Packet, PacketType, ParseError, BASE_HEADER_LEN, PROTOCOL_VERSION};
 use std::process::ExitCode;
 
 const USAGE: &str = "\
-pcnd — PCN node daemon (v0.1 protocol milestone)
+pcnd - PCN node daemon (v0.1 protocol milestone)
 
 USAGE:
     pcnd <command>
@@ -104,9 +104,14 @@ fn check(hex: &str) -> ExitCode {
     }
 }
 
-/// Minimal hex decoder (even length, optional `0x` prefix ignored).
+/// Minimal hex decoder.
+///
+/// Accepts an optional `0x` prefix and ignores ASCII whitespace, so
+/// `"01 02 03"` and `"010203"` are equivalent. Offsets in error messages
+/// refer to the whitespace-stripped string.
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-    let s = s.strip_prefix("0x").unwrap_or(s);
+    let compact: String = s.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let s = compact.strip_prefix("0x").unwrap_or(&compact);
     if s.len() % 2 != 0 {
         return Err("hex input has odd length".to_string());
     }
@@ -132,11 +137,11 @@ fn selftest() -> ExitCode {
         }
     };
 
-    println!("pcnd selftest — pcn-packet v0.1 (wire version {PROTOCOL_VERSION})");
+    println!("pcnd selftest - pcn-packet v0.1 (wire version {PROTOCOL_VERSION})");
 
     // 1. Roundtrip.
-    let src = Address::from_octets([0x10; 16]);
-    let dst = Address::from_octets([0x20; 16]);
+    let src = Address::new(AddressType::Private, 0x10);
+    let dst = Address::new(AddressType::Public, 0x20);
     let packet = Packet::builder(PacketType::Data, src, dst)
         .packet_id(1)
         .payload(b"pcnd selftest".to_vec())
@@ -162,6 +167,14 @@ fn selftest() -> ExitCode {
         ("rejects reserved byte", 9, 0xff, |e| {
             matches!(e, ParseError::NonZeroReserved { .. })
         }),
+        // Set reserved bit 0 of the source address (last byte, offset 19).
+        ("rejects address reserved bit", 19, 0x21, |e| {
+            matches!(e, ParseError::AddressReservedBitSet { .. })
+        }),
+        // Force reserved address type 3 in bits 63:61 of the source.
+        ("rejects reserved address type", 12, 0x60, |e| {
+            matches!(e, ParseError::UnsupportedAddressType { .. })
+        }),
     ];
     for (name, offset, value, matches) in cases {
         let mut bad = wire.clone();
@@ -169,6 +182,16 @@ fn selftest() -> ExitCode {
         let ok = matches!(Packet::parse(&bad), Err(e) if matches(&e));
         run(name, ok);
     }
+    // Zeroing the source address (offset 12..20) must be rejected too.
+    let mut no_src = wire.clone();
+    no_src[12..20].fill(0);
+    run(
+        "rejects unspecified source",
+        matches!(
+            Packet::parse(&no_src),
+            Err(ParseError::UnspecifiedAddress { .. })
+        ),
+    );
     run(
         "rejects short datagram",
         matches!(
@@ -190,5 +213,41 @@ fn selftest() -> ExitCode {
     } else {
         eprintln!("selftest FAILED ({failures} case(s))");
         ExitCode::FAILURE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_hex;
+
+    #[test]
+    fn hex_compact() {
+        assert_eq!(
+            decode_hex("deadbeef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn hex_with_spaces_and_prefix() {
+        assert_eq!(
+            decode_hex("0xde ad\tbe\nef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn hex_empty() {
+        assert_eq!(decode_hex("").unwrap(), Vec::<u8>::new());
+        assert_eq!(decode_hex("  \t\n").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn hex_odd_and_invalid() {
+        assert!(decode_hex("abc").is_err());
+        // Whitespace does not count toward length.
+        assert!(decode_hex("a b c").is_err());
+        assert!(decode_hex("zz").is_err());
+        assert!(decode_hex("de zz").is_err());
     }
 }

@@ -1,10 +1,368 @@
-PCN Core is dual-licensed under either of:
+# PCN Source-Available License 1.0
+### Draft - source-available license with commercial-use restrictions
 
-  * Apache License, Version 2.0 (see LICENSE-APACHE)
-  * MIT License (see LICENSE-MIT)
+**Status:** Draft for legal review
+**Rights holder:** [full name of the person or entity]
+**Effective date:** [date]
+**License:** PCN Source-Available License 1.0 (PCN-SAL-1.0)
 
-at your option.
+## 1. Purpose and nature of this license
 
-Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in PCN Core by you shall be dual-licensed as above,
-without any additional terms or conditions.
+This license governs the use of the PCN Core source code and the materials
+designated as covered by this license.
+
+Its purpose is to enable public audit, study, testing, and non-commercial
+development of the project, while allowing the rights holder to retain
+control over the commercial use of the code.
+
+This license is not an open source license within the meaning of the Open
+Source Definition. It is a source-available license that makes the source
+code available under the terms set out in this document.
+
+## 2. Definitions
+
+**2.1. Licensor** - the person or entity holding the rights necessary to
+grant a license to the Software.
+
+**2.2. Software** - the source code, object code, scripts, documentation,
+and other materials expressly covered by this license.
+
+**2.3. Modification** - a change to the Software, or a derivative work of
+it, to the extent protected by copyright.
+
+**2.4. Fork** - an independently continued project containing the Software
+or a Modification of it.
+
+**2.5. Non-Commercial Use** - use of the Software for private, educational,
+research, or hobby purposes, without the direct aim of obtaining revenue,
+providing a paid service, or obtaining any other economic benefit.
+
+**2.6. Commercial Use** - use of the Software within business or
+professional activity, or with the aim of obtaining revenue, remuneration,
+or any other economic benefit. This includes, in particular, sale, paid
+distribution, offering hosting, providing network services, making the
+functionality of the Software available as a service, and incorporating it
+into a commercial product.
+
+**2.7. PCN Commercial License** - a separate agreement concluded with an
+authorized Licensor, defining the scope of permitted Commercial Use.
+
+**2.8. PCN Global** - the officially administered global address space,
+registration infrastructure, and other resources of the official PCN
+network.
+
+**2.9. PCN Marks** - names, logos, trademarks, graphic designations, and
+other marks to which rights belong to an authorized entity.
+
+## 3. Activities permitted without a PCN Commercial License
+
+Subject to compliance with this license, the User may:
+
+1. view, download, and analyze the source code;
+2. conduct security audits and report bugs;
+3. run the Software on the User's own hardware and in a private
+   environment;
+4. learn from the code and use it for educational purposes;
+5. carry out non-commercial testing, experiments, and research;
+6. create Modifications and Forks for Non-Commercial Use;
+7. distribute unmodified copies and Modifications within the
+   non-commercial scope, subject to the terms of this license;
+8. operate private PCN domains and experimental networks independent of
+   PCN Global;
+9. submit improvements to the official project.
+
+Permitted activities do not include rights to commercial deployment, sale,
+paid hosting, or commercial offering of the Software's functionality,
+unless an express exception applies or a PCN Commercial License has been
+concluded.
+
+## 4. Restriction on Commercial Use
+
+**4.1. General rule**
+
+Without a PCN Commercial License, the User may not use the Software or its
+Modifications for Commercial Use.
+
+**4.2. Activities requiring consent**
+
+A separate PCN Commercial License is required in particular for:
+
+- selling the Software or a product containing the Software;
+- offering managed PCN infrastructure to customers;
+- operating a paid communication or network service based on the Software;
+- offering PCN as a service (Network-as-a-Service);
+- incorporating the Software into a commercial product, device, or
+  platform;
+- distributing the Software as part of a paid distribution or a paid
+  service package;
+- using the Software as a material part of a paid service provided to
+  third parties.
+
+**4.3. Prohibition on circumventing restrictions**
+
+The restrictions may not be circumvented by renaming a product, changing
+the organizational form, creating an intermediary, or splitting the
+activity, where the actual purpose and nature of the activity remain
+within the prohibited Commercial Use.
+
+**4.4. No automatic consent**
+
+The public availability of the repository, documentation, or binary files
+does not constitute consent to Commercial Use.
+
+**4.5. Internal activity**
+
+Commercial organizations may analyze the Software for the purpose of
+technical and security evaluation within a free-of-charge, limited test,
+provided they do not use it to provide services, sell a product, or deploy
+it in production. The scope and duration of this exception should be
+specified before the license is published.
+
+## 5. Commercial licensing
+
+**5.1. Right to obtain a license**
+
+A User interested in Commercial Use may apply to the Licensor for a PCN
+Commercial License.
+
+**5.2. Scope of the agreement**
+
+A PCN Commercial License may specify:
+
+- the permitted products, services, and manners of use;
+- the territory and duration of validity;
+- remuneration, license fees, or a settlement model;
+- the rules of distribution and disclosure of the code;
+- security and compatibility requirements;
+- the rules for using the PCN Marks;
+- the terms of access to PCN Global;
+- the scope of technical support and liability;
+- the terms of termination.
+
+**5.3. No guarantee that an agreement will be concluded**
+
+This license does not obligate the Licensor to grant a PCN Commercial
+License or to accept any particular commercial offer.
+
+**5.4. Prior agreements**
+
+Commercial permissions granted under a separate agreement are governed by
+its terms. In the event of a conflict, an express provision of the
+separate agreement takes precedence with respect to the commercial
+permission.
+
+## 6. Forks, Modifications, and redistribution
+
+**6.1. Right to fork**
+
+The User may create and develop Forks for Non-Commercial Use. The mere
+creation of a Fork does not grant the right to commercially exploit the
+code.
+
+**6.2. Conditions of redistribution**
+
+Redistribution permitted under this license requires:
+
+- including the full text of the license;
+- preserving the existing copyright notices;
+- marking material Modifications;
+- not misleading recipients as to the official origin;
+- complying with the licenses of external components.
+
+**6.3. Recipients' rights**
+
+Recipients of copies obtain only the rights arising from this license or
+from a separate agreement. The User may not grant broader rights to parts
+of the Software for which the User does not itself hold the necessary
+rights.
+
+**6.4. Commercial Forks**
+
+Developing, deploying, distributing, or offering a Fork for Commercial
+Use requires a PCN Commercial License, unless the given scope of use has
+been expressly exempted from this requirement.
+
+## 7. Copyright and contributions
+
+This license does not transfer copyright to the User.
+
+Authors of Modifications retain rights to their own contributions to the
+extent arising from applicable law. Rights to the original parts of the
+Software remain with their rightful owners.
+
+Submitting a patch to the official repository does not in itself transfer
+copyright. The project may establish a separate contribution policy or
+contributor agreement specifying the terms under which contributions are
+incorporated into the official release.
+
+## 8. Patents
+
+This license does not grant an express patent license.
+
+The Licensor does not warrant that use of the Software in every possible
+application will not infringe the patent rights of third parties.
+
+This provision does not derogate from rights that cannot be waived under
+mandatory provisions of law.
+
+## 9. External components
+
+External components may be subject to other licenses. Their terms apply
+independently of this document.
+
+Before release, a list of dependencies should be prepared and the
+compatibility of their licenses with the restrictions of PCN-SAL-1.0
+verified.
+
+The Licensor does not grant rights to third-party materials for which it
+does not hold the necessary rights.
+
+## 10. PCN Marks
+
+This license does not grant the right to use the PCN Marks in a manner
+suggesting official origin, endorsement, certification, or support.
+
+Independent Forks may use their own names, logos, and designations. They
+may factually state compatibility with, or derivation from, the code,
+provided such statements are true and not misleading.
+
+Detailed rules are set out in a separate document, the PCN Brand
+Guidelines.
+
+## 11. PCN Global
+
+The right to use the code does not imply the right to use the official
+PCN Global space.
+
+Participation in PCN Global may require separate registration, operator
+authorization, fulfillment of security requirements, and compliance with
+network policy.
+
+Private PCN domains may operate independently of PCN Global to the extent
+permitted by law and this license.
+
+Detailed terms are set out in a separate document, the PCN Global
+Governance Policy.
+
+## 12. Termination of rights
+
+In the event of a material breach of this license, the User's rights may
+be suspended or terminated in accordance with the final terms of the
+license and applicable law.
+
+Where legally permissible and practically feasible, the User should be
+notified of the breach and given a reasonable period to cure it.
+
+Termination of rights may not prejudice rights that cannot by law be
+taken away or restricted.
+
+## 13. Disclaimer of warranty and limitation of liability
+
+The Software is provided "as is" ("AS IS"), to the extent permitted by
+applicable law.
+
+The Licensor does not warrant that the Software is free of defects, that
+it will operate without interruption, that it is fully secure, or that it
+is compatible with all environments.
+
+To the extent permitted by law, the Licensor is not liable for damages
+arising from the use of the Software, loss of data, or interruptions in
+service operation.
+
+These provisions do not exclude or limit liability that cannot be
+excluded or limited under mandatory provisions of law.
+
+## 14. Changes to the license
+
+Each release should indicate the license version under which it was
+published.
+
+Publication of a new version of the license does not automatically change
+the terms of rights previously granted, unless a valid legal basis
+permits such a change and the required conditions have been met.
+
+## 15. Governing law and final provisions
+
+The governing law, court jurisdiction, controlling language, and the
+detailed procedure for resolving disputes will be determined following
+legal consultation.
+
+If any provision proves invalid or unenforceable, the remaining
+provisions remain in force to the extent permitted by law.
+
+This document is a draft and does not constitute legal advice or a
+confirmation of the legal effectiveness of any provision.
+
+---
+
+# Supplementary Document A
+## PCN Protocol and Network Terms 1.0
+
+### 1. Protocol versus implementation
+
+The protocol specification describes the packet format, addressing,
+routing, messages, and the behavior of compatible implementations. It does
+not transfer copyright in any particular implementation, nor does it grant
+rights to the PCN Marks.
+
+Rights to use the specification and to implement it should be described
+separately. In particular, it should be determined whether an independent
+implementation written from scratch, without copying protected code, may
+be used commercially.
+
+### 2. Private domains
+
+Anyone may create private PCN domains to the extent permitted by law. They
+may have their own local addressing, registries, routes, administrative
+rules, and infrastructure.
+
+A private domain does not automatically acquire the right to advertise
+routes in PCN Global.
+
+### 3. The official PCN Global network
+
+PCN Global operators are subject to separate terms of authorization,
+delegation of rights, routing, security, and abuse response.
+
+The withdrawal of PCN Global rights should not in itself deprive an
+operator of the ability to maintain an independent private domain.
+
+### 4. No guarantee of operation
+
+Protocol compliance does not guarantee the availability of routes, node
+reachability, packet delivery, or the confidentiality of communications.
+Operators are responsible for their own infrastructure to the extent
+arising from the applicable agreements and provisions of law.
+
+---
+
+# Supplementary Document B
+## PCN Brand Guidelines 1.0
+
+### 1. Ownership of the marks
+
+The name PCN, PCN Core, the logo, and other designations may be legally
+protected where rights to them belong to a designated entity. This
+document alone does not constitute trademark registration.
+
+### 2. Permitted designation of Forks
+
+Independent projects may factually state that they use PCN Core code or
+implement the PCN protocol. They should clearly distinguish themselves
+from the official release.
+
+### 3. Use of official designations
+
+Without the appropriate consent, an independent Fork may not be presented
+as an official PCN product, nor may it be suggested that it holds
+official certification, support, or access to PCN Global.
+
+### 4. Own identity
+
+Authors of Forks may create their own names, logos, internet domains, and
+visual identity, while respecting the rights of third parties.
+
+### 5. Certification
+
+If PCN introduces a compatibility certification program, the rules for
+using certification marks will be published separately.

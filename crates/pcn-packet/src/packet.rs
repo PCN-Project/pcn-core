@@ -1,8 +1,8 @@
 //! A complete packet: validated header plus payload.
 
 use crate::{
-    Address, BuildError, Header, PacketType, ParseError, BASE_HEADER_LEN, DEFAULT_HOP_LIMIT,
-    MAX_PACKET_LEN, MAX_PAYLOAD_LEN,
+    Address, AddressRole, AddressType, BuildError, EncodeError, Header, PacketType, ParseError,
+    BASE_HEADER_LEN, DEFAULT_HOP_LIMIT, MAX_PACKET_LEN, MAX_PAYLOAD_LEN,
 };
 use core::fmt;
 
@@ -11,7 +11,7 @@ use core::fmt;
 /// A `Packet` is always well-formed: it can only be produced by
 /// [`Packet::parse`] (which validates the whole datagram) or
 /// [`Packet::builder`] (which enforces the size limits at construction).
-/// There is no mutable access to header fields — a different packet is a
+/// There is no mutable access to header fields - a different packet is a
 /// different value, built through the builder.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Packet {
@@ -71,27 +71,29 @@ impl Packet {
         buf
     }
 
-    /// Serializes into a caller-provided buffer.
+    /// Serializes into a caller-provided buffer, returning the number of
+    /// bytes written (always [`wire_len`](Self::wire_len) on success).
     ///
-    /// `buf` must be at least [`wire_len`](Self::wire_len) bytes.
-    ///
-    /// # Panics
-    /// Panics if `buf` is too small; use [`encode`](Self::encode) for a
-    /// right-sized allocation.
-    pub fn encode_into(&self, buf: &mut [u8]) {
-        assert!(
-            buf.len() >= self.wire_len(),
-            "buffer too small for packet: {} < {}",
-            buf.len(),
-            self.wire_len()
-        );
-        self.header.encode(&mut buf[..BASE_HEADER_LEN]);
+    /// # Errors
+    /// Returns [`EncodeError::BufferTooSmall`] if `buf` is shorter than
+    /// [`wire_len`](Self::wire_len); the buffer is left unmodified.
+    pub fn encode_into(&self, buf: &mut [u8]) -> Result<usize, EncodeError> {
+        if buf.len() < self.wire_len() {
+            return Err(EncodeError::BufferTooSmall {
+                required: self.wire_len(),
+                available: buf.len(),
+            });
+        }
+        // Cannot fail: the slice is exactly BASE_HEADER_LEN.
+        let _ = self.header.encode(&mut buf[..BASE_HEADER_LEN]);
         buf[BASE_HEADER_LEN..self.wire_len()].copy_from_slice(&self.payload);
+        Ok(self.wire_len())
     }
 
     /// Parses and validates a complete datagram.
     ///
-    /// In addition to the header checks in [`Header::decode`], this
+    /// In addition to the header checks in [`Header::decode`] (including
+    /// rejection of unspecified source/destination addresses), this
     /// verifies that the declared total length
     /// (`Header Length + Payload Length`, computed without overflow)
     /// equals the number of bytes actually received and does not exceed
@@ -105,7 +107,7 @@ impl Packet {
     pub fn parse(buf: &[u8]) -> Result<Self, ParseError> {
         let header = Header::decode(buf)?;
 
-        // usize arithmetic: declared cannot overflow (max 48 + 65535).
+        // usize arithmetic: declared cannot overflow (max 32 + 65535).
         let declared = header.total_len();
         if declared != buf.len() {
             return Err(ParseError::LengthMismatch {
@@ -125,7 +127,11 @@ impl Packet {
     ///
     /// # Errors
     /// Returns [`BuildError::PayloadTooLarge`] if `payload` exceeds
-    /// [`MAX_PAYLOAD_LEN`].
+    /// [`MAX_PAYLOAD_LEN`], or an address error
+    /// ([`BuildError::UnspecifiedAddress`],
+    /// [`BuildError::AddressReservedBitSet`],
+    /// [`BuildError::UnsupportedAddressType`]) if an address is not
+    /// routable in v0.1.
     pub fn echo_request(
         source: Address,
         destination: Address,
@@ -184,10 +190,18 @@ impl PacketBuilder {
     /// Builds the packet.
     ///
     /// # Errors
-    /// Returns [`BuildError::PayloadTooLarge`] if the payload does not fit
-    /// in the 16-bit Payload Length field or the packet would exceed
-    /// [`MAX_PACKET_LEN`].
+    /// * [`BuildError::PayloadTooLarge`] - the payload does not fit in the
+    ///   16-bit Payload Length field or the packet would exceed
+    ///   [`MAX_PACKET_LEN`].
+    /// * [`BuildError::UnspecifiedAddress`],
+    ///   [`BuildError::AddressReservedBitSet`],
+    ///   [`BuildError::UnsupportedAddressType`] - source or destination
+    ///   is not routable in v0.1 (only private and public addresses with
+    ///   a clear reserved bit are), mirroring the parse-side rules so a
+    ///   built packet always survives `parse`.
     pub fn build(self) -> Result<Packet, BuildError> {
+        check_address(self.source, AddressRole::Source)?;
+        check_address(self.destination, AddressRole::Destination)?;
         if self.payload.len() > MAX_PAYLOAD_LEN {
             return Err(BuildError::PayloadTooLarge {
                 len: self.payload.len(),
@@ -211,16 +225,34 @@ impl PacketBuilder {
     }
 }
 
+/// Applies the v0.1 routability rules to an address given to the
+/// builder, mirroring `Header::decode`.
+fn check_address(addr: Address, role: AddressRole) -> Result<(), BuildError> {
+    if addr.is_unspecified() {
+        return Err(BuildError::UnspecifiedAddress { role });
+    }
+    if addr.has_reserved_bit() {
+        return Err(BuildError::AddressReservedBitSet { role });
+    }
+    match addr.address_type() {
+        AddressType::Private | AddressType::Public => Ok(()),
+        other => Err(BuildError::UnsupportedAddressType {
+            role,
+            found: other.to_bits(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Flags;
 
     fn src() -> Address {
-        Address::from_octets([0xaa; 16])
+        Address::new(AddressType::Private, 0xaaaa)
     }
     fn dst() -> Address {
-        Address::from_octets([0xbb; 16])
+        Address::new(AddressType::Public, 0xbbbb)
     }
 
     #[test]
@@ -288,7 +320,7 @@ mod tests {
             .unwrap()
             .encode();
 
-        // Trailing garbage: declared stays 51, actual is 53.
+        // Trailing garbage: declared stays 35, actual is 37.
         let mut padded = wire.clone();
         padded.extend_from_slice(&[0, 0]);
         assert_eq!(
@@ -299,7 +331,7 @@ mod tests {
             })
         );
 
-        // Truncated payload: declared 51, actual 50.
+        // Truncated payload: declared 35, actual 34.
         assert_eq!(
             Packet::parse(&wire[..wire.len() - 1]),
             Err(ParseError::LengthMismatch {
@@ -311,7 +343,7 @@ mod tests {
 
     #[test]
     fn parse_rejects_oversized_declared() {
-        // header_len 48 + payload_len 65535 = 65583 > MAX_PACKET_LEN.
+        // header_len 32 + payload_len 65535 = 65567 > MAX_PACKET_LEN.
         // Supply a matching-length buffer so the PacketTooLarge branch is
         // what fires, not LengthMismatch.
         let mut buf = Packet::builder(PacketType::Data, src(), dst())
@@ -351,10 +383,80 @@ mod tests {
             .build()
             .unwrap();
         let mut buf = vec![0xff_u8; packet.wire_len() + 8];
-        packet.encode_into(&mut buf);
+        assert_eq!(packet.encode_into(&mut buf), Ok(packet.wire_len()));
         assert_eq!(&buf[..packet.wire_len()], packet.encode().as_slice());
         // Bytes past wire_len are untouched.
         assert!(buf[packet.wire_len()..].iter().all(|&b| b == 0xff));
+    }
+
+    #[test]
+    fn encode_into_rejects_small_buffer() {
+        let packet = Packet::builder(PacketType::Control, src(), dst())
+            .payload(vec![9; 4])
+            .build()
+            .unwrap();
+        let mut buf = vec![0u8; packet.wire_len() - 1];
+        assert_eq!(
+            packet.encode_into(&mut buf),
+            Err(EncodeError::BufferTooSmall {
+                required: packet.wire_len(),
+                available: packet.wire_len() - 1
+            })
+        );
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn builder_rejects_unspecified_addresses() {
+        assert_eq!(
+            Packet::builder(PacketType::Data, Address::UNSPECIFIED, dst()).build(),
+            Err(BuildError::UnspecifiedAddress {
+                role: AddressRole::Source
+            })
+        );
+        assert_eq!(
+            Packet::builder(PacketType::Data, src(), Address::UNSPECIFIED).build(),
+            Err(BuildError::UnspecifiedAddress {
+                role: AddressRole::Destination
+            })
+        );
+    }
+
+    #[test]
+    fn builder_rejects_non_routable_addresses() {
+        // Reserved type 0 with a nonzero value.
+        let type0 = Address::new(AddressType::Reserved, 7);
+        assert_eq!(
+            Packet::builder(PacketType::Data, type0, dst()).build(),
+            Err(BuildError::UnsupportedAddressType {
+                role: AddressRole::Source,
+                found: 0
+            })
+        );
+
+        // Unsupported type 5.
+        let type5 = Address::new(AddressType::Unsupported(5), 1);
+        assert_eq!(
+            Packet::builder(PacketType::Data, src(), type5).build(),
+            Err(BuildError::UnsupportedAddressType {
+                role: AddressRole::Destination,
+                found: 5
+            })
+        );
+
+        // Private value 1 with reserved bit 0 set.
+        let reserved = Address::from_octets([0x20, 0, 0, 0, 0, 0, 0, 0x03]);
+        assert_eq!(
+            Packet::builder(PacketType::Data, reserved, dst()).build(),
+            Err(BuildError::AddressReservedBitSet {
+                role: AddressRole::Source
+            })
+        );
+
+        // A parsed packet can never carry such addresses either.
+        assert!(!type0.is_routable());
+        assert!(!type5.is_routable());
+        assert!(!reserved.is_routable());
     }
 
     #[test]

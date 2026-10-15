@@ -1,4 +1,4 @@
-# PCN Transport — v0.1
+# PCN Transport - v0.1
 
 **Status:** provisional design note. No transport code ships in this
 milestone; this document fixes the constraints the transport layer will
@@ -13,8 +13,8 @@ not a protocol dependency.
 
 Planned transports (roughly in order):
 
-1. UDP over IPv4/IPv6 — the initial overlay.
-2. Direct Ethernet — PCN ethertype, no IP involved.
+1. UDP over IPv4/IPv6 - the initial overlay.
+2. Direct Ethernet - PCN ethertype, no IP involved.
 3. Others (e.g. serial/tunnel media) as needed.
 
 Node identity and addressing must not need redesign when a new transport

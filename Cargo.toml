@@ -9,8 +9,7 @@ members = [
 [workspace.package]
 edition = "2021"
 rust-version = "1.75"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/pcn/pcn-core"
+license = "LicenseRef-PCN-SAL-1.0"
 
 [workspace.lints.rust]
 # The wire-format and packet-parsing code must never rely on `unsafe`.

@@ -4,6 +4,24 @@ use crate::{BASE_HEADER_LEN, MAX_PACKET_LEN};
 use core::fmt;
 use std::error::Error;
 
+/// Which header address field an error refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressRole {
+    /// The Source Address field.
+    Source,
+    /// The Destination Address field.
+    Destination,
+}
+
+impl fmt::Display for AddressRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Source => f.write_str("source"),
+            Self::Destination => f.write_str("destination"),
+        }
+    }
+}
+
 /// Errors produced when decoding a datagram into a [`crate::Packet`].
 ///
 /// Every variant corresponds to a validation rule in
@@ -11,7 +29,7 @@ use std::error::Error;
 /// malformed input; it reports one of these instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
-    /// The datagram is shorter than the 48-byte base header, so no header
+    /// The datagram is shorter than the 32-byte base header, so no header
     /// field may be read at all.
     Truncated {
         /// Bytes actually received.
@@ -62,6 +80,30 @@ pub enum ParseError {
         /// Flags value found on the wire.
         found: u16,
     },
+    /// An address field contains the all-zero
+    /// [`Address::UNSPECIFIED`](crate::Address::UNSPECIFIED) address, which
+    /// is not routable and therefore not legal on the wire in v0.1.
+    UnspecifiedAddress {
+        /// Which header field carried the zero address.
+        role: AddressRole,
+    },
+    /// An address field has reserved bit `[0]` set. Bit 0 must be zero
+    /// in every PCN-ADDR address; the text form cannot even express it,
+    /// so a set bit means a malformed or future-format peer.
+    AddressReservedBitSet {
+        /// Which header field carried the malformed address.
+        role: AddressRole,
+    },
+    /// An address field carries a type that v0.1 does not assign as a
+    /// routable address type. Only private (1) and public (2) are
+    /// legal; this also covers reserved type 0 values other than the
+    /// all-zero unspecified address.
+    UnsupportedAddressType {
+        /// Which header field carried the address.
+        role: AddressRole,
+        /// The 3-bit type field as found on the wire.
+        found: u8,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -106,6 +148,19 @@ impl fmt::Display for ParseError {
                 "unsupported flags 0x{found:04x} \
                  (v0.1 defines no flag bits)"
             ),
+            Self::UnspecifiedAddress { role } => {
+                write!(f, "{role} address is the unspecified (all-zero) address")
+            }
+            Self::AddressReservedBitSet { role } => write!(
+                f,
+                "{role} address has the reserved bit 0 set \
+                 (must be zero in v0.1)"
+            ),
+            Self::UnsupportedAddressType { role, found } => write!(
+                f,
+                "{role} address has unsupported type {found} \
+                 (v0.1 assigns 1 = private, 2 = public)"
+            ),
         }
     }
 }
@@ -123,6 +178,27 @@ pub enum BuildError {
         /// Largest permitted payload size in bytes.
         max: usize,
     },
+    /// An address field is the all-zero
+    /// [`Address::UNSPECIFIED`](crate::Address::UNSPECIFIED) address, which
+    /// is not routable and therefore not legal on the wire in v0.1.
+    UnspecifiedAddress {
+        /// Which header field carried the zero address.
+        role: AddressRole,
+    },
+    /// An address field has reserved bit `[0]` set, mirroring the
+    /// parse-side rule so a built packet always survives `parse`.
+    AddressReservedBitSet {
+        /// Which header field carried the malformed address.
+        role: AddressRole,
+    },
+    /// An address field carries a type that v0.1 does not assign as a
+    /// routable address type (only private = 1 and public = 2).
+    UnsupportedAddressType {
+        /// Which header field carried the address.
+        role: AddressRole,
+        /// The 3-bit type field of the address.
+        found: u8,
+    },
 }
 
 impl fmt::Display for BuildError {
@@ -133,8 +209,50 @@ impl fmt::Display for BuildError {
                 "payload of {len} bytes exceeds the maximum \
                  of {max} bytes"
             ),
+            Self::UnspecifiedAddress { role } => {
+                write!(f, "{role} address is the unspecified (all-zero) address")
+            }
+            Self::AddressReservedBitSet { role } => write!(
+                f,
+                "{role} address has the reserved bit 0 set \
+                 (must be zero in v0.1)"
+            ),
+            Self::UnsupportedAddressType { role, found } => write!(
+                f,
+                "{role} address has unsupported type {found} \
+                 (v0.1 assigns 1 = private, 2 = public)"
+            ),
         }
     }
 }
 
 impl Error for BuildError {}
+
+/// Errors produced when serializing into a caller-provided buffer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EncodeError {
+    /// The output buffer is too small for the encoded bytes.
+    BufferTooSmall {
+        /// Bytes needed.
+        required: usize,
+        /// Bytes the buffer provides.
+        available: usize,
+    },
+}
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BufferTooSmall {
+                required,
+                available,
+            } => write!(
+                f,
+                "output buffer too small: {available} bytes available, \
+                 {required} required"
+            ),
+        }
+    }
+}
+
+impl Error for EncodeError {}

@@ -1,10 +1,10 @@
-//! `pcn-packet` — PCN protocol wire format: representation, serialization,
+//! `pcn-packet` - PCN protocol wire format: representation, serialization,
 //! parsing, and validation.
 //!
 //! This crate implements the provisional protocol v0.1 packet format
 //! described in `docs/protocol/v0.1/packet-format.md`:
 //!
-//! * a fixed 48-byte base header,
+//! * a fixed 32-byte base header,
 //! * five packet types ([`PacketType`]),
 //! * a payload whose length is declared in the header.
 //!
@@ -31,13 +31,13 @@ mod header;
 mod packet;
 mod packet_type;
 
-pub use error::{BuildError, ParseError};
+pub use error::{AddressRole, BuildError, EncodeError, ParseError};
 pub use flags::Flags;
 pub use header::Header;
 pub use packet::{Packet, PacketBuilder};
 pub use packet_type::PacketType;
 
-pub use pcn_address::Address;
+pub use pcn_address::{Address, AddressType};
 
 /// On-wire protocol version number for the "0.1" specification.
 ///
@@ -46,7 +46,7 @@ pub use pcn_address::Address;
 pub const PROTOCOL_VERSION: u8 = 1;
 
 /// Length in bytes of the fixed v0.1 base header.
-pub const BASE_HEADER_LEN: usize = 48;
+pub const BASE_HEADER_LEN: usize = 32;
 
 /// Maximum total wire size of a PCN packet in v0.1, in bytes.
 ///

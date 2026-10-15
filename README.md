@@ -4,13 +4,13 @@ PCN Core is the reference implementation of **PCN**, a multi-transport
 network architecture, written in Rust for Linux and Android.
 
 PCN separates node **identity** (stable PCN-ID, future work), **routing
-addresses** (16-byte locators in packet headers), and **transport
-endpoints** (e.g. IP + UDP port). UDP/IP is the first transport — an
-overlay — not a permanent dependency; direct Ethernet and other media are
+addresses** (64-bit PCN-ADDR locators in packet headers), and **transport
+endpoints** (e.g. IP + UDP port). UDP/IP is the first transport - an
+overlay - not a permanent dependency; direct Ethernet and other media are
 planned under the same identity and routing model.
 
 > **Status: early development.** Protocol v0.1 is provisional. There is no
-> cryptography, no routing, and no networking yet — see
+> cryptography, no routing, and no networking yet - see
 > [docs/protocol/v0.1/security.md](docs/protocol/v0.1/security.md) for an
 > honest list of what is and is not provided.
 
@@ -28,7 +28,7 @@ pcn-core/
 ├── crates/
 │   ├── pcn-address/        # Address, DomainId, ScopedAddress
 │   └── pcn-packet/         # v0.1 wire format: encode/parse/validate
-├── services/               # pcn-registry (planned — not created yet)
+├── services/               # pcn-registry (planned - not created yet)
 ├── tests/                  # cross-crate integration/interop (planned)
 └── deploy/                 # packaging notes (planned)
 ```
@@ -37,11 +37,11 @@ pcn-core/
 
 | Component | What it does |
 |---|---|
-| `pcn-address` | 16-byte `Address` (display/parse as 8 hex groups), `DomainId`, domain-qualified `ScopedAddress` |
+| `pcn-address` | 64-bit PCN-ADDR `Address` (type + 60-bit value + reserved bit; `pcn~TXXX-XXXX-XXXXX` Base32 text form), `AddressType`, `DomainId`, domain-qualified `ScopedAddress` |
 | `pcn-packet` | Typed `Header`/`Packet`/`PacketType`, deterministic big-endian encoding, validating parser with typed `ParseError`, `PacketBuilder` with `BuildError` |
 | `pcnd` | `pcnd selftest` exercises the codec; `pcnd check <hex>` decodes a datagram. No sockets, no async |
 
-### Planned (not created — no empty crates)
+### Planned (not created - no empty crates)
 
 `apps/pcn` (CLI for node management), `services/pcn-registry` (PCN Global
 registry), `crates/pcn-transport` + `pcn-transport-udp` (transport
@@ -68,7 +68,7 @@ Run the daemon's self-test and packet inspector:
 
 ```bash
 cargo run -p pcnd -- selftest
-cargo run -p pcnd -- check 010200000030000440000000000000000000000000000000000000010000000000000000000000000000000000000002abcd1234deadbeef
+cargo run -p pcnd -- check "0102 0000 0020 0004 40000000 20000000 00000002 40000000 00000004 abcd1234 deadbeef"
 ```
 
 ## Engineering rules
@@ -82,5 +82,8 @@ cargo run -p pcnd -- check 01020000003000044000000000000000000000000000000000000
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) **or** [MIT](LICENSE-MIT),
-at your option.
+[PCN Source-Available License 1.0 (PCN-SAL-1.0)](LICENSE) - a draft
+source-available license: audit, study, and non-commercial use are
+permitted; commercial use requires a separate PCN Commercial License. It
+is **not** an open source license within the meaning of the Open Source
+Definition.

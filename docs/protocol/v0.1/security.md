@@ -1,4 +1,4 @@
-# PCN Security — v0.1
+# PCN Security - v0.1
 
 **Status:** honest-statement document. v0.1 ships **no** cryptographic
 mechanisms. This file exists to record what is and is not claimed.
@@ -55,4 +55,4 @@ The design anticipates:
 - Use ECHO packets only for reachability diagnostics, never as proof of
   identity or authorization.
 - Deployments needing confidentiality must wrap PCN in an external secure
-  channel today — and should say so plainly.
+  channel today - and should say so plainly.

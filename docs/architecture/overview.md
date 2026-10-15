@@ -1,4 +1,4 @@
-# PCN Core — Architecture Overview
+# PCN Core - Architecture Overview
 
 PCN is a multi-transport network architecture. PCN Core is its reference
 protocol implementation, written in Rust, targeting Linux and Android first.
@@ -51,10 +51,11 @@ Rules of the layering:
 Built now:
 
 - Cargo workspace (`apps/`, `crates/`).
-- `pcn-address` — 16-byte `Address`, `DomainId`, `ScopedAddress`.
-- `pcn-packet` — v0.1 wire format: typed header, deterministic
+- `pcn-address` - 64-bit PCN-ADDR `Address` (typed: private/public,
+  `pcn~` Base32 text form), `DomainId`, `ScopedAddress`.
+- `pcn-packet` - v0.1 wire format: typed header, deterministic
   serialization, validating parser, typed errors.
-- `pcnd` — minimal binary: `selftest` exercises the codec, `check`
+- `pcnd` - minimal binary: `selftest` exercises the codec, `check`
   decodes a hex datagram. No network I/O yet.
 - Provisional specs under `docs/protocol/v0.1/`.
 
