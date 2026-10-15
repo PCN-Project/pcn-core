@@ -1,0 +1,194 @@
+//! `pcnd` — the PCN node daemon.
+//!
+//! Milestone 0.1 scope: the daemon does **not** open sockets or join a
+//! network yet. It exists to prove the workspace builds and to provide
+//! two honest, testable functions:
+//!
+//! * `pcnd selftest` — exercises the `pcn-packet` codec (encode, parse,
+//!   and each validation rejection path) and reports pass/fail.
+//! * `pcnd check <hex>` — decodes a datagram supplied as hexadecimal and
+//!   prints the header fields, or the precise reason it is invalid. This
+//!   is the same code path the future UDP transport will feed.
+//!
+//! Network services (UDP transport, routing, registry) are documented as
+//! planned components in the repository README.
+
+use pcn_address::Address;
+use pcn_packet::{Packet, PacketType, ParseError, BASE_HEADER_LEN, PROTOCOL_VERSION};
+use std::process::ExitCode;
+
+const USAGE: &str = "\
+pcnd — PCN node daemon (v0.1 protocol milestone)
+
+USAGE:
+    pcnd <command>
+
+COMMANDS:
+    selftest        Run packet codec encode/parse/validation checks
+    check <hex>     Decode a wire datagram given as hex and print its header
+    version         Print version information
+
+The v0.1 daemon performs no network I/O. The UDP transport and routing
+layers are planned components; see README.md.";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.first().map(String::as_str) {
+        Some("selftest") => selftest(),
+        Some("check") => match args.get(1) {
+            Some(hex) => check(hex),
+            None => {
+                eprintln!("error: 'check' requires a hex-encoded datagram");
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        },
+        Some("version") | Some("--version") | Some("-V") => {
+            println!(
+                "pcnd {} (protocol v0.1, wire version {PROTOCOL_VERSION})",
+                env!("CARGO_PKG_VERSION")
+            );
+            ExitCode::SUCCESS
+        }
+        Some("help") | Some("--help") | Some("-h") => {
+            println!("{USAGE}");
+            ExitCode::SUCCESS
+        }
+        Some(other) => {
+            eprintln!("error: unknown command '{other}'");
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+        None => {
+            eprintln!("{USAGE}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Decodes a hex datagram and prints either the header or the rejection.
+fn check(hex: &str) -> ExitCode {
+    let bytes = match decode_hex(hex) {
+        Ok(b) => b,
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            return ExitCode::from(2);
+        }
+    };
+    match Packet::parse(&bytes) {
+        Ok(packet) => {
+            let h = packet.header();
+            println!(
+                "valid {} packet, {} bytes total",
+                h.packet_type().name(),
+                bytes.len()
+            );
+            println!("  version      = {PROTOCOL_VERSION}");
+            println!(
+                "  type         = {} (0x{:02x})",
+                h.packet_type().name(),
+                h.packet_type().to_u8()
+            );
+            println!("  header_len   = {}", h.header_len());
+            println!("  payload_len  = {}", h.payload_len());
+            println!("  hop_limit    = {}", h.hop_limit());
+            println!("  source       = {}", h.source());
+            println!("  destination  = {}", h.destination());
+            println!("  packet_id    = 0x{:08x}", h.packet_id());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("invalid datagram: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Minimal hex decoder (even length, optional `0x` prefix ignored).
+fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.strip_prefix("0x").unwrap_or(s);
+    if s.len() % 2 != 0 {
+        return Err("hex input has odd length".to_string());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16).map_err(|_| format!("invalid hex at offset {i}"))
+        })
+        .collect()
+}
+
+/// A selftest rejection case: corrupt `wire[offset] = value`, then check
+/// that `Packet::parse` fails with an error matching `expect`.
+type RejectCase = (&'static str, usize, u8, fn(&ParseError) -> bool);
+
+/// Encode/parse/validate exercise. Returns process exit code.
+fn selftest() -> ExitCode {
+    let mut failures = 0u32;
+    let mut run = |name: &str, ok: bool| {
+        println!("  {name:<48} {}", if ok { "ok" } else { "FAIL" });
+        if !ok {
+            failures += 1;
+        }
+    };
+
+    println!("pcnd selftest — pcn-packet v0.1 (wire version {PROTOCOL_VERSION})");
+
+    // 1. Roundtrip.
+    let src = Address::from_octets([0x10; 16]);
+    let dst = Address::from_octets([0x20; 16]);
+    let packet = Packet::builder(PacketType::Data, src, dst)
+        .packet_id(1)
+        .payload(b"pcnd selftest".to_vec())
+        .build();
+    let roundtrip_ok = match &packet {
+        Ok(p) => Packet::parse(&p.encode()).as_ref() == Ok(p),
+        Err(_) => false,
+    };
+    run("encode/parse roundtrip", roundtrip_ok);
+
+    // 2. Each validation path rejects a corrupted datagram.
+    let wire = packet.as_ref().map(Packet::encode).unwrap_or_default();
+    let cases: &[RejectCase] = &[
+        ("rejects bad version", 0, 0x02, |e| {
+            matches!(e, ParseError::UnsupportedVersion { .. })
+        }),
+        ("rejects unknown type", 1, 0x7f, |e| {
+            matches!(e, ParseError::UnknownPacketType { .. })
+        }),
+        ("rejects flag bit", 2, 0x01, |e| {
+            matches!(e, ParseError::UnsupportedFlags { .. })
+        }),
+        ("rejects reserved byte", 9, 0xff, |e| {
+            matches!(e, ParseError::NonZeroReserved { .. })
+        }),
+    ];
+    for (name, offset, value, matches) in cases {
+        let mut bad = wire.clone();
+        bad[*offset] = *value;
+        let ok = matches!(Packet::parse(&bad), Err(e) if matches(&e));
+        run(name, ok);
+    }
+    run(
+        "rejects short datagram",
+        matches!(
+            Packet::parse(&wire[..BASE_HEADER_LEN - 1]),
+            Err(ParseError::Truncated { .. })
+        ),
+    );
+    run(
+        "rejects length mismatch",
+        matches!(
+            Packet::parse(&wire[..wire.len().saturating_sub(1)]),
+            Err(ParseError::LengthMismatch { .. })
+        ),
+    );
+
+    if failures == 0 {
+        println!("selftest passed");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("selftest FAILED ({failures} case(s))");
+        ExitCode::FAILURE
+    }
+}

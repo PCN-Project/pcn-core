@@ -1,0 +1,72 @@
+# PCN Core — Architecture Overview
+
+PCN is a multi-transport network architecture. PCN Core is its reference
+protocol implementation, written in Rust, targeting Linux and Android first.
+
+## 1. Design principles
+
+- **Identity ≠ location.** A node's PCN-ID is stable regardless of where
+  the node attaches. Routing addresses describe location; transport
+  endpoints describe how the bits get there today. The three never blur.
+- **Multi-transport by construction.** UDP/IP is the first overlay, not a
+  foundation. Direct Ethernet and other media must slot under the same
+  routing and identity layers without redesign.
+- **Decentralized data plane.** Packets forward node-to-node or via
+  routers; no packet is required to traverse a central server. Central
+  services exist only in the control plane (registries, authority,
+  policy distribution).
+- **Federated authority.** PCN Global is hierarchical: a Root Authority
+  delegates bounded permissions to operators; private domains remain
+  sovereign over local configuration.
+- **Honest capability claims.** Components that are designed but not built
+  are documented as planned, never stubbed into looking real.
+
+## 2. Layering
+
+```text
++----------------------------------------------------------+
+| Applications: pcnd, pcn, services (pcn-registry, ...)     |
++-------------------------------+--------------------------+
+| Control plane                 | Data plane               |
+| pcn-protocol (planned)        | pcn-routing (planned)    |
+| pcn-config   (planned)        | pcn-packet  (built)      |
+| pcn-identity (planned)        | pcn-address (built)      |
++-------------------------------+--------------------------+
+| Transport abstraction: pcn-transport (planned)           |
+|   pcn-transport-udp (planned) | ethernet | ...           |
++----------------------------------------------------------+
+| Underlay: UDP/IP today; Ethernet and other media later   |
++----------------------------------------------------------+
+```
+
+Rules of the layering:
+
+- `pcn-packet` knows nothing about sockets, IP, or UDP.
+- `pcn-routing` will know nothing about how packets are carried.
+- Transport crates own endpoints; routing owns PCN addresses; identity
+  will own PCN-ID. Cross-layer short-circuits are prohibited.
+
+## 3. Current milestone (v0.1)
+
+Built now:
+
+- Cargo workspace (`apps/`, `crates/`).
+- `pcn-address` — 16-byte `Address`, `DomainId`, `ScopedAddress`.
+- `pcn-packet` — v0.1 wire format: typed header, deterministic
+  serialization, validating parser, typed errors.
+- `pcnd` — minimal binary: `selftest` exercises the codec, `check`
+  decodes a hex datagram. No network I/O yet.
+- Provisional specs under `docs/protocol/v0.1/`.
+
+Explicitly not built: networking, routing, identity crypto, registry,
+policy, NAT traversal, Android packaging. See the README status table.
+
+## 4. Platforms
+
+- **Linux:** first-class. Transport and daemon code may use Linux APIs
+  inside `pcn-transport-*`/`pcnd`; library crates stay portable.
+- **Android:** the protocol libraries are portable Rust and must compile
+  for Android targets (e.g. `aarch64-linux-android`) from day one. A
+  Rust library is *not* an Android app: packaging, the NDK/VpnService
+  integration, and lifecycle management are future deliverables under
+  `deploy/android/`.

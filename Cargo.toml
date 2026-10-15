@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/pcnd",
+    "crates/pcn-address",
+    "crates/pcn-packet",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pcn/pcn-core"
+
+[workspace.lints.rust]
+# The wire-format and packet-parsing code must never rely on `unsafe`.
+unsafe_code = "forbid"

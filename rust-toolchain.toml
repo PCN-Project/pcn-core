@@ -1,0 +1,7 @@
+# PCN Core targets stable Rust. The minimum supported Rust version (MSRV)
+# is declared in the workspace `Cargo.toml` as `rust-version` (currently 1.75).
+# This file pins the channel only; it intentionally does not pin an exact
+# toolchain version so developers can use any stable toolchain >= MSRV.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

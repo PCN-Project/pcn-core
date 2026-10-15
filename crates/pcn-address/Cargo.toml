@@ -1,0 +1,10 @@
+[package]
+name = "pcn-address"
+version = "0.1.0"
+description = "PCN addressing types: routing addresses and domain-aware scoped addresses"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
