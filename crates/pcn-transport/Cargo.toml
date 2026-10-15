@@ -1,0 +1,10 @@
+[package]
+name = "pcn-transport"
+version = "0.1.0"
+description = "PCN transport abstraction: transport-agnostic synchronous datagram interface"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

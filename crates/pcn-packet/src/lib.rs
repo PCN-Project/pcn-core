@@ -2,7 +2,7 @@
 //! parsing, and validation.
 //!
 //! This crate implements the provisional protocol v0.1 packet format
-//! described in `docs/protocol/v0.1/packet-format.md`:
+//! described in `docs/protocol/packet-format.md`:
 //!
 //! * a fixed 32-byte base header,
 //! * five packet types ([`PacketType`]),

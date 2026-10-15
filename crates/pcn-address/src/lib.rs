@@ -24,7 +24,7 @@
 //! In protocol v0.1 the on-wire address (PCN-ADDR) is a structured
 //! 64-bit value: a 3-bit type field, a 60-bit address value, and one
 //! reserved bit. Local and global scopes are expressed as address types
-//! (see `docs/protocol/v0.1/addressing.md`).
+//! (see `docs/protocol/addressing.md`).
 
 use core::fmt;
 use std::error::Error;
@@ -111,7 +111,7 @@ impl AddressType {
 /// characters grouped `4-4-5`: the first character encodes the type,
 /// the remaining twelve encode the 60-bit value, e.g.
 /// `pcn~1K4M-2X9R-06D3P` (private) or `pcn~2K4M-2X9R-06D3P` (public).
-/// The `pcn~` prefix is optional when parsing, but [`Display`] always
+/// The `pcn~` prefix is optional when parsing, but [`fmt::Display`] always
 /// emits the canonical prefixed form.
 /// The text form never appears on the wire; the wire form is 8 raw
 /// big-endian octets.

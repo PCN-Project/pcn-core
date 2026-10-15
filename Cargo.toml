@@ -4,6 +4,9 @@ members = [
     "apps/pcnd",
     "crates/pcn-address",
     "crates/pcn-packet",
+    "crates/pcn-routing",
+    "crates/pcn-transport",
+    "crates/pcn-transport-udp",
 ]
 
 [workspace.package]

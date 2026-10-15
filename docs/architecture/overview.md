@@ -28,12 +28,12 @@ protocol implementation, written in Rust, targeting Linux and Android first.
 | Applications: pcnd, pcn, services (pcn-registry, ...)     |
 +-------------------------------+--------------------------+
 | Control plane                 | Data plane               |
-| pcn-protocol (planned)        | pcn-routing (planned)    |
+| pcn-protocol (planned)        | pcn-routing (built)      |
 | pcn-config   (planned)        | pcn-packet  (built)      |
 | pcn-identity (planned)        | pcn-address (built)      |
 +-------------------------------+--------------------------+
-| Transport abstraction: pcn-transport (planned)           |
-|   pcn-transport-udp (planned) | ethernet | ...           |
+| Transport abstraction: pcn-transport (built)             |
+|   pcn-transport-udp (built)   | ethernet | ...           |
 +----------------------------------------------------------+
 | Underlay: UDP/IP today; Ethernet and other media later   |
 +----------------------------------------------------------+
@@ -55,12 +55,19 @@ Built now:
   `pcn~` Base32 text form), `DomainId`, `ScopedAddress`.
 - `pcn-packet` - v0.1 wire format: typed header, deterministic
   serialization, validating parser, typed errors.
+- `pcn-transport` - transport-agnostic synchronous datagram interface.
+- `pcn-transport-udp` - UDP transport on `std::net::UdpSocket`:
+  bind/send/recv/timeout, `SocketAddr` endpoints.
+- `pcn-routing` - static exact-match route table and the
+  deliver/forward/drop decision with hop-limit handling. A library only;
+  no node consumes it yet.
 - `pcnd` - minimal binary: `selftest` exercises the codec, `check`
   decodes a hex datagram. No network I/O yet.
-- Provisional specs under `docs/protocol/v0.1/`.
+- Provisional specs under `docs/protocol/`.
 
-Explicitly not built: networking, routing, identity crypto, registry,
-policy, NAT traversal, Android packaging. See the README status table.
+Explicitly not built: a node using routing (`pcnd` still opens no
+sockets), identity crypto, registry, policy, NAT traversal, Android
+packaging. See the README status table.
 
 ## 4. Platforms
 

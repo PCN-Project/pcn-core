@@ -1,0 +1,17 @@
+[package]
+name = "pcn-transport-udp"
+version = "0.1.0"
+description = "PCN UDP transport: synchronous datagram transport over std::net::UdpSocket"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pcn-transport = { path = "../pcn-transport", version = "0.1.0" }
+
+[dev-dependencies]
+pcn-packet = { path = "../pcn-packet", version = "0.1.0" }
+pcn-address = { path = "../pcn-address", version = "0.1.0" }

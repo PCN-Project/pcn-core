@@ -14,6 +14,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "pcn-routing"
+version = "0.1.0"
+dependencies = [
+ "pcn-address",
+ "pcn-packet",
+]
+
+[[package]]
+name = "pcn-transport"
+version = "0.1.0"
+
+[[package]]
+name = "pcn-transport-udp"
+version = "0.1.0"
+dependencies = [
+ "pcn-address",
+ "pcn-packet",
+ "pcn-transport",
+]
+
+[[package]]
 name = "pcnd"
 version = "0.1.0"
 dependencies = [

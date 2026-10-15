@@ -25,7 +25,7 @@ impl fmt::Display for AddressRole {
 /// Errors produced when decoding a datagram into a [`crate::Packet`].
 ///
 /// Every variant corresponds to a validation rule in
-/// `docs/protocol/v0.1/packet-format.md`. Parsing never panics on
+/// `docs/protocol/packet-format.md`. Parsing never panics on
 /// malformed input; it reports one of these instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
