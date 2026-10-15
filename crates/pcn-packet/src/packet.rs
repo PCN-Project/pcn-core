@@ -168,6 +168,34 @@ impl Packet {
             .payload(self.payload())
             .build()
     }
+
+    /// Builds the [`PacketType::Ack`] acknowledging this DATA packet.
+    ///
+    /// Ack semantics: the ACK's source is the DATA destination (the
+    /// accepting endpoint), its destination is the DATA source, and
+    /// `packet_id` echoes the DATA `packet_id` - that triple is the
+    /// correlation key. The payload is empty. The ACK is a *new*
+    /// packet originating with [`DEFAULT_HOP_LIMIT`]; routers forward
+    /// it by its destination address like any packet.
+    ///
+    /// `packet_id` is sender-chosen and not unique across senders, so
+    /// the triple check is required - a bare id match is not proof.
+    ///
+    /// # Errors
+    /// * [`BuildError::NotData`] - `self` is not DATA; only DATA is
+    ///   acknowledged (ACKing an ACK would loop).
+    /// * The usual builder address errors - unreachable for a parsed
+    ///   packet, kept for API honesty.
+    pub fn ack(&self) -> Result<Self, BuildError> {
+        let h = self.header();
+        if h.packet_type() != PacketType::Data {
+            return Err(BuildError::NotData);
+        }
+        Self::builder(PacketType::Ack, h.destination(), h.source())
+            .packet_id(h.packet_id())
+            .payload([])
+            .build()
+    }
 }
 
 impl fmt::Debug for Packet {
@@ -509,6 +537,46 @@ mod tests {
         assert_eq!(h.hop_limit(), DEFAULT_HOP_LIMIT);
         // And it stays a valid wire packet.
         assert_eq!(Packet::parse(&reply.encode()), Ok(reply));
+    }
+
+    #[test]
+    fn ack_mirrors_data_packet() {
+        let data = Packet::builder(PacketType::Data, src(), dst())
+            .packet_id(0xCAFE)
+            .payload(b"payload")
+            .build()
+            .unwrap();
+        let ack = data.ack().unwrap();
+        let h = ack.header();
+        assert_eq!(h.packet_type(), PacketType::Ack);
+        assert_eq!(h.source(), dst()); // the accepting endpoint
+        assert_eq!(h.destination(), src());
+        assert_eq!(h.packet_id(), 0xCAFE);
+        assert!(ack.payload().is_empty());
+        assert_eq!(h.hop_limit(), DEFAULT_HOP_LIMIT);
+        // Wire-valid.
+        assert_eq!(Packet::parse(&ack.encode()), Ok(ack));
+    }
+
+    #[test]
+    fn ack_rejects_non_data() {
+        // Only DATA is acknowledged - ACKing anything else (especially
+        // ACK itself) would enable loops.
+        for ty in [
+            PacketType::EchoRequest,
+            PacketType::EchoReply,
+            PacketType::Error,
+            PacketType::Control,
+            PacketType::Ack,
+        ] {
+            let p = Packet::builder(ty, src(), dst()).build().unwrap();
+            assert_eq!(p.ack().unwrap_err(), BuildError::NotData, "{ty:?}");
+        }
+        let data = Packet::builder(PacketType::Data, src(), dst())
+            .build()
+            .unwrap();
+        let ack = data.ack().unwrap();
+        assert_eq!(ack.ack().unwrap_err(), BuildError::NotData);
     }
 
     #[test]

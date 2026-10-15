@@ -202,6 +202,9 @@ pub enum BuildError {
     /// [`Packet::echo_reply`](crate::Packet::echo_reply) was called on a
     /// packet that is not an [`EchoRequest`](crate::PacketType::EchoRequest).
     NotEchoRequest,
+    /// [`Packet::ack`](crate::Packet::ack) was called on a packet that is
+    /// not [`Data`](crate::PacketType::Data) - only DATA is acknowledged.
+    NotData,
 }
 
 impl fmt::Display for BuildError {
@@ -228,6 +231,7 @@ impl fmt::Display for BuildError {
             Self::NotEchoRequest => {
                 f.write_str("cannot build ECHO_REPLY from a non-ECHO_REQUEST packet")
             }
+            Self::NotData => f.write_str("cannot build ACK for a non-DATA packet"),
         }
     }
 }

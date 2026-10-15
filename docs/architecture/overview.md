@@ -62,15 +62,17 @@ Built now:
   deliver/forward/drop decision with hop-limit handling.
 - `pcnd` - node daemon: `run` binds a UDP socket and drives the routing
   decision loop; answers locally-delivered ECHO_REQUEST with an
-  ECHO_REPLY sent back through the route table; locally-delivered DATA
-  payloads reach the application-facing interface (stdout, one
-  `delivered:` line each); `selftest`/`check` remain.
+  ECHO_REPLY and DATA with an ACK, both sent back through the route
+  table; locally-delivered payloads reach the application-facing
+  interface (stdout, one `delivered:` line each, deduplicated by
+  `(source, packet_id)`); `selftest`/`check` remain.
 - `pcn` - client CLI: `ping` probes with sequential ECHO_REQUESTs;
-  `send`/`recv` move unacknowledged DATA payloads (no ACK,
-  retransmission, or ordering - best-effort delivery).
+  `send`/`recv` move DATA payloads end-to-end - `send` waits for the
+  destination's ACK (bounded retries, `--no-ack` opt-out), receivers
+  dedup retransmissions so a lost ACK never double-delivers.
 - Provisional specs under `docs/protocol/`.
 
-Explicitly not built: delivery acknowledgments, dynamic routing,
+Explicitly not built: ordering, congestion control, dynamic routing,
 identity crypto, registry, policy, NAT traversal, Android packaging,
 and any semantics for CONTROL or ERROR payloads. See the README status
 table.

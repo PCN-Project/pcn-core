@@ -20,6 +20,12 @@ pub enum PacketType {
     Error,
     /// `0x05` - control-plane message (routing, administration).
     Control,
+    /// `0x06` - acknowledges a [`PacketType::Data`] packet. The ACK's
+    /// source is the DATA packet's destination (the endpoint that
+    /// accepted it), its destination is the DATA source, and its
+    /// `packet_id` echoes the DATA `packet_id`; the payload is empty.
+    /// Sent by the destination endpoint only - never by routers.
+    Ack,
 }
 
 impl PacketType {
@@ -33,6 +39,8 @@ impl PacketType {
     pub const ERROR: u8 = 0x04;
     /// The wire value for [`PacketType::Control`].
     pub const CONTROL: u8 = 0x05;
+    /// The wire value for [`PacketType::Ack`].
+    pub const ACK: u8 = 0x06;
 
     /// Maps a wire value to a packet type, or `None` if the value is not
     /// assigned in v0.1.
@@ -44,6 +52,7 @@ impl PacketType {
             Self::ECHO_REPLY => Some(Self::EchoReply),
             Self::ERROR => Some(Self::Error),
             Self::CONTROL => Some(Self::Control),
+            Self::ACK => Some(Self::Ack),
             _ => None,
         }
     }
@@ -57,6 +66,7 @@ impl PacketType {
             Self::EchoReply => Self::ECHO_REPLY,
             Self::Error => Self::ERROR,
             Self::Control => Self::CONTROL,
+            Self::Ack => Self::ACK,
         }
     }
 
@@ -69,6 +79,7 @@ impl PacketType {
             Self::EchoReply => "ECHO_REPLY",
             Self::Error => "ERROR",
             Self::Control => "CONTROL",
+            Self::Ack => "ACK",
         }
     }
 }
@@ -85,6 +96,7 @@ mod tests {
             PacketType::EchoReply,
             PacketType::Error,
             PacketType::Control,
+            PacketType::Ack,
         ] {
             assert_eq!(PacketType::from_u8(ty.to_u8()), Some(ty));
         }
@@ -97,12 +109,13 @@ mod tests {
         assert_eq!(PacketType::EchoReply.to_u8(), 0x03);
         assert_eq!(PacketType::Error.to_u8(), 0x04);
         assert_eq!(PacketType::Control.to_u8(), 0x05);
+        assert_eq!(PacketType::Ack.to_u8(), 0x06);
     }
 
     #[test]
     fn unknown_values_rejected() {
         assert_eq!(PacketType::from_u8(0x00), None);
-        assert_eq!(PacketType::from_u8(0x06), None);
+        assert_eq!(PacketType::from_u8(0x07), None);
         assert_eq!(PacketType::from_u8(0xff), None);
     }
 

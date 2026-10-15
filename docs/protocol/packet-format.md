@@ -62,9 +62,32 @@ from any programming-language struct and must be serialized explicitly.
 | `0x03` | `ECHO_REPLY` | answer to `ECHO_REQUEST` |
 | `0x04` | `ERROR` | reports a delivery/processing failure |
 | `0x05` | `CONTROL` | control-plane message (routing, administration) |
+| `0x06` | `ACK` | acknowledges a `DATA` packet |
 
 These values are provisional and may be renumbered before the format is
-frozen. Payload semantics per type are not defined in v0.1.
+frozen. Payload semantics per type are not defined in v0.1 except for
+`ACK`, defined below.
+
+### `ACK` semantics (v0.1)
+
+An `ACK` is originated by the destination endpoint of a `DATA` packet -
+never by routers; a forwarded packet is not acknowledged by the path.
+It is sent once the destination accepts the `DATA` packet for local
+delivery, and again for every retransmission of that packet (a lost ACK
+is the cause of retries; the receiver must dedup deliveries by
+`(source, packet_id)` but still re-ACK).
+
+The `ACK`'s source is the `DATA` packet's destination, its destination
+is the `DATA` packet's source, and its `packet_id` echoes the `DATA`
+`packet_id`. That `(type, source, destination, packet_id)` tuple is the
+correlation key; `packet_id` alone does not prove acknowledgment
+(it is sender-chosen and not unique). The `ACK` payload is empty
+(`Payload Length = 0`). An `ACK` is routed by its destination address
+like any packet, is never bounced to the original UDP sender endpoint,
+and never triggers further replies (`ACK` of an `ACK` does not exist).
+Senders may bound the wait with a timeout and retry count; a retry may
+deliver the same `(source, packet_id)` `DATA` twice, so receivers dedup
+by that key.
 
 ## 4. Field notes
 

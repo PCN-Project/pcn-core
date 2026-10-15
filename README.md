@@ -46,7 +46,7 @@ pcn-core/
 | `pcn-transport` + `pcn-transport-udp` | `Transport` trait (send/recv/timeout/local endpoint) and a synchronous `UdpSocket` implementation |
 | `pcn-packet` | Typed `Header`/`Packet`/`PacketType`, deterministic big-endian encoding, validating parser with typed `ParseError`, `PacketBuilder` with `BuildError` |
 | `pcnd` | `pcnd run` starts a real node: UDP receive loop, static routes, local delivery, forwarding with Hop Limit decrement, ECHO_REQUEST -> ECHO_REPLY responder. `selftest`/`check` still work |
-| `pcn` | `pcn ping` sends real PCN ECHO_REQUESTs over UDP through a configured next hop, matches replies (type + both addresses + packet_id), reports RTT and loss. `pcn send`/`pcn recv` move UTF-8 DATA payloads the same way |
+| `pcn` | `pcn ping` sends real PCN ECHO_REQUESTs over UDP through a configured next hop, matches replies (type + both addresses + packet_id), reports RTT and loss. `pcn send`/`pcn recv` move UTF-8 DATA payloads the same way, acknowledged end-to-end with `ACK` packets |
 
 ### Planned (not created - no empty crates)
 
@@ -117,21 +117,27 @@ summary prints sent/received/lost, loss percentage and rtt min/avg/max.
 Send DATA (application payload) instead of a probe:
 
 ```bash
-# B - receive DATA for its address (plain client, no daemon needed)
-pcn recv --listen 127.0.0.1:41003 --source pcn~1000-0000-00002
+# B - receive DATA for its address; --via is the first hop for ACKs
+pcn recv --listen 127.0.0.1:41003 --source pcn~1000-0000-00002 \
+    --via 127.0.0.1:41002
 
-# A - one DATA packet through R1 to B
+# A - one DATA packet through R1 to B; exit 0 only after B's ACK
 pcn send --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
     --target pcn~1000-0000-00002 --via 127.0.0.1:41002 \
     --message "Zażółć gęślą jaźń"
 ```
 
 `pcn recv` prints `data from pcn~...: <payload>` for DATA packets
-addressed to `--source`; `pcnd` nodes also log delivered payloads as
-`delivered: ... "text"`. DATA is **unacknowledged**: `send` exiting 0
-only means the datagram left the socket - there is no ACK,
-retransmission, or ordering. Delivery is proven by the receiver's
-output, not the sender's exit code.
+addressed to `--source` and answers each with an `ACK` sent via
+`--via`; `pcnd` nodes log delivered payloads and ACK them through their
+route table. By default `send` requires a matching `ACK` (type + both
+addresses + packet_id) within `--timeout-ms` (default 1000) and retries
+`--retries` times (default 2) with the SAME packet_id; `--no-ack`
+restores fire-and-forget. A retry can deliver a duplicate `DATA` -
+receivers dedup by `(source, packet_id)` and print retries as
+`(duplicate)`, so at-most-once holds at the application level, while
+the ACK may arrive late. `pcnd` uses the same `(source, packet_id)`
+dedup before logging `delivered:`.
 
 Inter-node transport is UDP only; there is no dynamic routing,
 cryptographic neighbor identity, or PCN Global.

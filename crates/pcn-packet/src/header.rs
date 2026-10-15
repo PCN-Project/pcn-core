@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_type() {
-        for bad in [0x00u8, 0x06, 0x80, 0xff] {
+        for bad in [0x00u8, 0x07, 0x80, 0xff] {
             let mut buf = sample_header().to_bytes();
             buf[1] = bad;
             assert_eq!(
@@ -542,6 +542,7 @@ mod tests {
             PacketType::EchoReply,
             PacketType::Error,
             PacketType::Control,
+            PacketType::Ack,
         ] {
             let mut buf = sample_header().to_bytes();
             buf[1] = ty.to_u8();

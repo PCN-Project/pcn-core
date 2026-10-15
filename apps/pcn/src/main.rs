@@ -7,13 +7,14 @@
 //!   ECHO_REPLY to arrive. Probes are sequential - at most one request
 //!   is outstanding at a time.
 //! * `pcn send` / `pcn recv` - DATA packets carrying UTF-8 payloads.
-//!   Delivery is best-effort and unacknowledged: `send` exiting 0 only
-//!   means the datagram left this socket.
+//!   `send` waits for the destination's ACK (bounded retries); exit 0
+//!   requires a matching ACK, `--no-ack` restores fire-and-forget.
 
 use pcn_address::Address;
 use pcn_packet::{Packet, PacketType, MAX_PACKET_LEN, PROTOCOL_VERSION};
 use pcn_transport::Transport;
 use pcn_transport_udp::UdpTransport;
+use std::collections::HashSet;
 use std::io;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -66,11 +67,17 @@ OPTIONS:
     --target ADDR         destination PCN address
     --via HOST:PORT       UDP endpoint of the first hop (gateway/router)
     --message TEXT        UTF-8 message payload (required)
+    --timeout-ms MS       per-attempt ACK timeout (default 1000)
+    --retries N           retransmissions after a timeout (default 2)
+    --no-ack              fire-and-forget: do not wait for an ACK
 
-Sending is fire-and-forget: exit 0 means the datagram left this socket.
-There is no acknowledgment - delivery is only proven by the receiver
-('pcn recv' output or 'delivered:' in the peer's pcnd log).
-Exit code: 0 = sent, 1 = I/O error, 2 = bad arguments.";
+By default send waits for an ACK packet from the destination; exit 0
+means the destination endpoint acknowledged the exact message (type,
+both addresses, and packet_id must match - a bare id is not proof).
+Each retry resends the SAME packet_id: if the ACK was lost, the
+receiver sees a duplicate and must dedup it - it still ACKs again.
+Exit code: 0 = acknowledged (or sent with --no-ack), 1 = timeout or
+I/O error, 2 = bad arguments.";
 
 const RECV_USAGE: &str = "\
 pcn recv - receive DATA packets addressed to a local PCN address
@@ -81,9 +88,14 @@ USAGE:
 OPTIONS:
     --listen HOST:PORT    local UDP endpoint to bind (required)
     --source ADDR         local PCN address to receive on
+    --via HOST:PORT       UDP endpoint for ACKs back to senders
+                          (optional; without it recv is a passive sink
+                          and acked 'pcn send' will time out)
 
 Prints one line per matching DATA packet:
     data from pcn~...: <utf8 text or 0x hex>
+With --via, every matching DATA packet is acknowledged - including
+retransmissions, which print as 'data from ... (duplicate): ...'.
 All other datagrams (ECHO, foreign destinations, malformed bytes) are
 ignored. Runs until interrupted. Nodes sending to --source must route
 it to this --listen endpoint - there is no implicit return routing.";
@@ -169,19 +181,29 @@ fn match_reply(packet: &Packet, target: Address, source: Address, packet_id: u32
         && h.packet_id() == packet_id
 }
 
-/// Waits for the matching reply until `deadline`; unrelated or
-/// malformed datagrams are consumed and ignored. Returns RTT measured
-/// from `sent_at` on a monotonic clock.
+/// `true` when `packet` acknowledges our pending DATA message: an ACK
+/// from the target endpoint, addressed to our source, carrying the
+/// DATA `packet_id`. Same triple check as ping's reply matching.
+fn match_ack(packet: &Packet, target: Address, source: Address, packet_id: u32) -> bool {
+    let h = packet.header();
+    h.packet_type() == PacketType::Ack
+        && h.source() == target
+        && h.destination() == source
+        && h.packet_id() == packet_id
+}
+
+/// Waits until `deadline` for a packet satisfying `matches`; unrelated
+/// or malformed datagrams are consumed and ignored. Returns the
+/// elapsed time from `sent_at` on a monotonic clock.
 ///
 /// # Errors
 /// Propagates unexpected socket errors; timeout expiry is not an error -
 /// it returns `Ok(None)`.
-fn await_reply(
+fn await_matching(
     transport: &UdpTransport,
-    deadline: Instant,
     sent_at: Instant,
-    config: &PingConfig,
-    packet_id: u32,
+    deadline: Instant,
+    matches: impl Fn(&Packet) -> bool,
 ) -> io::Result<Option<Duration>> {
     let mut buf = vec![0u8; MAX_PACKET_LEN];
     loop {
@@ -192,7 +214,7 @@ fn await_reply(
         match transport.recv_from(&mut buf) {
             Ok((n, _from)) => {
                 if let Ok(p) = Packet::parse(&buf[..n]) {
-                    if match_reply(&p, config.target, config.source, packet_id) {
+                    if matches(&p) {
                         return Ok(Some(sent_at.elapsed()));
                     }
                 }
@@ -206,6 +228,19 @@ fn await_reply(
             },
         }
     }
+}
+
+/// Waits for the matching ECHO_REPLY until `deadline`.
+fn await_reply(
+    transport: &UdpTransport,
+    deadline: Instant,
+    sent_at: Instant,
+    config: &PingConfig,
+    packet_id: u32,
+) -> io::Result<Option<Duration>> {
+    await_matching(transport, sent_at, deadline, |p| {
+        match_reply(p, config.target, config.source, packet_id)
+    })
 }
 
 /// min/avg/max over RTT samples. `None` when empty.
@@ -433,6 +468,12 @@ struct SendConfig {
     via: SocketAddr,
     /// UTF-8 message; becomes the DATA payload byte-for-byte.
     message: String,
+    /// Per-attempt ACK timeout.
+    timeout: Duration,
+    /// Retransmissions after each timeout.
+    retries: u32,
+    /// Skip waiting for an ACK entirely (fire-and-forget).
+    no_ack: bool,
 }
 
 fn send_command(args: &[String]) -> ExitCode {
@@ -456,9 +497,10 @@ fn send_command(args: &[String]) -> ExitCode {
     }
 }
 
-/// Builds the DATA packet and hands it to `via`. Exit 0 means only
-/// that the datagram was accepted by the local socket - nothing more
-/// is promised (no ACK exists in v0.1).
+/// Sends the DATA packet to `via`, then (unless `--no-ack`) waits for
+/// the destination's ACK with bounded retries. All retransmissions
+/// carry the SAME `packet_id` - a retried packet is a duplicate by
+/// design and the receiver dedups it by (source, id).
 fn send(config: &SendConfig) -> Result<(), String> {
     let transport = UdpTransport::bind(config.listen)
         .map_err(|e| format!("cannot bind {}: {e}", config.listen))?;
@@ -468,17 +510,47 @@ fn send(config: &SendConfig) -> Result<(), String> {
         .payload(config.message.as_bytes())
         .build()
         .map_err(|e| format!("cannot build DATA packet: {e}"))?;
-    transport
-        .send_to(&packet.encode(), &config.via)
-        .map_err(|e| format!("send to {}: {e}", config.via))?;
-    println!(
-        "sent {} B DATA {} -> {} via {} (id=0x{packet_id:08x}); unacknowledged",
-        packet.payload().len(),
-        config.source,
-        config.target,
-        config.via
-    );
-    Ok(())
+    let wire = packet.encode();
+
+    if config.no_ack {
+        transport
+            .send_to(&wire, &config.via)
+            .map_err(|e| format!("send to {}: {e}", config.via))?;
+        println!(
+            "sent {} B DATA {} -> {} via {} (id=0x{packet_id:08x}); unacknowledged",
+            packet.payload().len(),
+            config.source,
+            config.target,
+            config.via
+        );
+        return Ok(());
+    }
+
+    let attempts = 1 + config.retries;
+    for attempt in 1..=attempts {
+        let sent_at = Instant::now();
+        transport
+            .send_to(&wire, &config.via)
+            .map_err(|e| format!("send to {}: {e}", config.via))?;
+        match await_matching(&transport, sent_at, sent_at + config.timeout, |p| {
+            match_ack(p, config.target, config.source, packet_id)
+        })
+        .map_err(|e| format!("receive error: {e}"))?
+        {
+            Some(rtt) => {
+                println!(
+                    "acknowledged by {} in {:.3} ms (id=0x{packet_id:08x}, attempt {attempt}/{attempts})",
+                    config.target,
+                    rtt.as_secs_f64() * 1000.0
+                );
+                return Ok(());
+            }
+            None => println!("timeout waiting for ACK (attempt {attempt}/{attempts})"),
+        }
+    }
+    Err(format!(
+        "no ACK after {attempts} attempts - message not confirmed delivered"
+    ))
 }
 
 /// `pcn recv` configuration.
@@ -488,6 +560,9 @@ struct RecvConfig {
     listen: SocketAddr,
     /// Our PCN address; only DATA addressed to it is reported.
     source: Address,
+    /// UDP endpoint ACKs are sent to (first hop back to the sender);
+    /// `None` = passive sink, never acknowledges.
+    via: Option<SocketAddr>,
 }
 
 /// `true` for a DATA packet addressed to `local`. ECHO and packets for
@@ -547,12 +622,19 @@ fn recv(config: &RecvConfig) -> Result<(), String> {
     let transport = UdpTransport::bind(config.listen)
         .map_err(|e| format!("cannot bind {}: {e}", config.listen))?;
     println!(
-        "receiving DATA for {} on {}",
+        "receiving DATA for {} on {}{}",
         config.source,
         transport
             .local_endpoint()
-            .map_err(|e| format!("local addr: {e}"))?
+            .map_err(|e| format!("local addr: {e}"))?,
+        match config.via {
+            Some(v) => format!(", ACKs via {v}"),
+            None => String::from(", passive (no ACKs - set --via to acknowledge)"),
+        }
     );
+    // Bounded dedup: retried DATA (same source+packet_id) is printed
+    // once, but still re-ACKed - the sender may have lost the first ACK.
+    let mut seen: HashSet<(Address, u32)> = HashSet::new();
     let mut buf = vec![0u8; MAX_PACKET_LEN];
     loop {
         match transport.recv_from(&mut buf) {
@@ -560,13 +642,34 @@ fn recv(config: &RecvConfig) -> Result<(), String> {
                 let Ok(p) = Packet::parse(&buf[..n]) else {
                     continue;
                 };
-                if is_data_for(&p, config.source) {
-                    println!(
-                        "data from {}: {}",
-                        p.header().source(),
-                        fmt_payload(p.payload())
-                    );
+                if !is_data_for(&p, config.source) {
+                    continue;
                 }
+                let h = p.header();
+                let duplicate = !seen.insert((h.source(), h.packet_id()));
+                if !duplicate && seen.len() > 4096 {
+                    seen.clear();
+                }
+                // ACK first, then report - even a duplicate gets its ACK
+                // (it may be a retry after a lost one).
+                if let Some(via) = config.via {
+                    match p.ack() {
+                        Ok(ack) => {
+                            if let Err(e) = transport.send_to(&ack.encode(), &via) {
+                                eprintln!("ACK send to {via} failed: {e}");
+                            }
+                        }
+                        // Unreachable: p is DATA, ack() only rejects
+                        // non-DATA. Log defensively, never panic.
+                        Err(e) => eprintln!("cannot build ACK: {e}"),
+                    }
+                }
+                println!(
+                    "data from {}{}: {}",
+                    h.source(),
+                    if duplicate { " (duplicate)" } else { "" },
+                    fmt_payload(p.payload())
+                );
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(format!("receive error: {e}")),
@@ -581,6 +684,9 @@ fn parse_send_args(args: &[String]) -> Result<SendConfig, String> {
     let mut target = None;
     let mut via = None;
     let mut message = None;
+    let mut timeout = Duration::from_millis(1000);
+    let mut retries = 2u32;
+    let mut no_ack = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -593,6 +699,14 @@ fn parse_send_args(args: &[String]) -> Result<SendConfig, String> {
             "--source" => source = Some(parse_address(take(args, &mut i, inline, flag)?, flag)?),
             "--target" => target = Some(parse_address(take(args, &mut i, inline, flag)?, flag)?),
             "--via" => via = Some(parse_endpoint(take(args, &mut i, inline, flag)?, flag)?),
+            "--timeout-ms" => timeout = parse_duration_ms(take(args, &mut i, inline, flag)?, flag)?,
+            "--retries" => retries = parse_u32(take(args, &mut i, inline, flag)?, flag)?,
+            "--no-ack" => {
+                if inline.is_some() {
+                    return Err("--no-ack takes no value".into());
+                }
+                no_ack = true;
+            }
             "--message" => {
                 let m = take(args, &mut i, inline, flag)?;
                 if m.len() > pcn_packet::MAX_PAYLOAD_LEN {
@@ -614,6 +728,9 @@ fn parse_send_args(args: &[String]) -> Result<SendConfig, String> {
         target: target.ok_or("send requires --target ADDR")?,
         via: via.ok_or("send requires --via HOST:PORT")?,
         message: message.ok_or("send requires --message TEXT")?,
+        timeout,
+        retries,
+        no_ack,
     })
 }
 
@@ -621,6 +738,7 @@ fn parse_send_args(args: &[String]) -> Result<SendConfig, String> {
 fn parse_recv_args(args: &[String]) -> Result<RecvConfig, String> {
     let mut listen = None;
     let mut source = None;
+    let mut via = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -631,6 +749,7 @@ fn parse_recv_args(args: &[String]) -> Result<RecvConfig, String> {
         match flag {
             "--listen" => listen = Some(parse_endpoint(take(args, &mut i, inline, flag)?, flag)?),
             "--source" => source = Some(parse_address(take(args, &mut i, inline, flag)?, flag)?),
+            "--via" => via = Some(parse_endpoint(take(args, &mut i, inline, flag)?, flag)?),
             other => return Err(format!("unknown option '{other}'")),
         }
         i += 1;
@@ -639,6 +758,7 @@ fn parse_recv_args(args: &[String]) -> Result<RecvConfig, String> {
     Ok(RecvConfig {
         listen: listen.ok_or("recv requires --listen HOST:PORT")?,
         source: source.ok_or("recv requires --source ADDR")?,
+        via,
     })
 }
 
@@ -723,6 +843,70 @@ mod tests {
             full.extend(bad_args);
             assert!(parse_ping_args(&full).is_err(), "{full:?} must fail");
         }
+    }
+
+    #[test]
+    fn ack_matching_requires_everything() {
+        let data = Packet::builder(PacketType::Data, addr(1), addr(2))
+            .packet_id(77)
+            .payload(b"m".to_vec())
+            .build()
+            .unwrap();
+        let ack = data.ack().unwrap();
+        assert!(match_ack(&ack, addr(2), addr(1), 77));
+        // Wrong id, wrong source, wrong destination, wrong type, late
+        // ACK for a different message - each alone must fail.
+        assert!(!match_ack(&ack, addr(2), addr(1), 78));
+        assert!(!match_ack(&ack, addr(9), addr(1), 77));
+        assert!(!match_ack(&ack, addr(2), addr(9), 77));
+        assert!(!match_ack(&data, addr(2), addr(1), 77)); // DATA, not ACK
+        let other = Packet::builder(PacketType::Data, addr(1), addr(2))
+            .packet_id(78)
+            .build()
+            .unwrap()
+            .ack()
+            .unwrap();
+        assert!(!match_ack(&other, addr(2), addr(1), 77));
+    }
+
+    #[test]
+    fn send_parses_ack_controls() {
+        let cfg = parse_send_args(&[
+            "--listen".into(),
+            "127.0.0.1:41001".into(),
+            "--source".into(),
+            "pcn~1000-0000-00001".into(),
+            "--target".into(),
+            "pcn~1000-0000-00002".into(),
+            "--via".into(),
+            "127.0.0.1:41002".into(),
+            "--message".into(),
+            "hi".into(),
+            "--timeout-ms".into(),
+            "250".into(),
+            "--retries".into(),
+            "5".into(),
+            "--no-ack".into(),
+        ])
+        .unwrap();
+        assert_eq!(cfg.timeout, Duration::from_millis(250));
+        assert_eq!(cfg.retries, 5);
+        assert!(cfg.no_ack);
+        // --no-ack takes no value.
+        assert!(parse_send_args(&[
+            "--listen".into(),
+            "127.0.0.1:41001".into(),
+            "--source".into(),
+            "pcn~1000-0000-00001".into(),
+            "--target".into(),
+            "pcn~1000-0000-00002".into(),
+            "--via".into(),
+            "127.0.0.1:41002".into(),
+            "--message".into(),
+            "hi".into(),
+            "--no-ack=yes".into(),
+        ])
+        .is_err());
     }
 
     #[test]

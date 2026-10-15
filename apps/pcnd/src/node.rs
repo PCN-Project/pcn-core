@@ -21,7 +21,7 @@ use pcn_packet::{Packet, PacketType, ParseError, MAX_PACKET_LEN};
 use pcn_routing::{decide, forward, Decision, DropReason, ForwardError, NextHopId, RouteTable};
 use pcn_transport::Transport;
 use pcn_transport_udp::UdpTransport;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -84,16 +84,32 @@ pub enum Action {
     Deliver(Packet),
     /// Routing rejected the packet; the original is kept for logging.
     Drop { reason: DropReason, packet: Packet },
-    /// Forward this packet (already rebuilt with Hop Limit - 1) to this
-    /// transport endpoint.
+    /// Send this packet to this transport endpoint. For transit
+    /// packets (`originated: false`) it was rebuilt by `forward()` with
+    /// Hop Limit - 1; locally originated replies/ACKs keep their fresh
+    /// Hop Limit.
     Send {
         packet: Packet,
         endpoint: SocketAddr,
+        /// `true` when this node originated the packet (ECHO_REPLY,
+        /// ACK), `false` for transit - used only for log wording.
+        originated: bool,
     },
     /// Defensive arm for the unreachable rebuild failure: a parsed
     /// packet always survives `PacketBuilder`, so this exists only so
     /// `handle` never panics if `pcn-packet` invariants ever weaken.
     Internal(ForwardError),
+    /// Deliver `packet` locally, then dispatch `then` - used for DATA,
+    /// whose local delivery is followed by routing an ACK back to the
+    /// sender through the normal routing table (Send), dropped when no
+    /// return route exists, or delivered locally for self-addressed
+    /// DATA.
+    DeliverThen {
+        /// The packet delivered to the local application interface.
+        packet: Packet,
+        /// The follow-up action (the ACK's routing outcome).
+        then: Box<Action>,
+    },
 }
 
 /// Pure packet pipeline: bytes in, [`Action`] out. No sockets, no
@@ -104,11 +120,24 @@ pub fn handle(config: &NodeConfig, bytes: &[u8]) -> Action {
         Err(e) => return Action::Malformed(e),
     };
     match decide(&config.local_addrs, &config.routes, &packet) {
-        // Locally addressed ECHO_REQUEST is answered; everything else
-        // delivered (including ECHO_REPLY) is just delivered - replies
-        // never trigger replies, which breaks reply loops.
+        // Locally addressed ECHO_REQUEST is answered; DATA is delivered
+        // and then acknowledged - the ACK is routed by its PCN
+        // destination like any locally originated packet; everything
+        // else delivered (ECHO_REPLY, ACK, CONTROL, ERROR) is just
+        // delivered - replies never trigger replies.
         Decision::Deliver => match packet.header().packet_type() {
             PacketType::EchoRequest => respond(config, packet),
+            PacketType::Data => {
+                // Unreachable for a parsed packet; kept so handle()
+                // never panics if invariants weaken.
+                match packet.ack() {
+                    Ok(ack) => Action::DeliverThen {
+                        packet,
+                        then: Box::new(route_out(config, ack)),
+                    },
+                    Err(e) => Action::Internal(ForwardError::Rebuild(e)),
+                }
+            }
             _ => Action::Deliver(packet),
         },
         Decision::Drop(reason) => Action::Drop { reason, packet },
@@ -117,6 +146,7 @@ pub fn handle(config: &NodeConfig, bytes: &[u8]) -> Action {
                 Ok(fwd) => Action::Send {
                     packet: fwd,
                     endpoint,
+                    originated: false,
                 },
                 // decide() already filtered hop_limit <= 1; both arms are
                 // kept explicit so no forward() error becomes a panic.
@@ -152,25 +182,116 @@ fn respond(config: &NodeConfig, request: Packet) -> Action {
         // explicit so no error path ever panics.
         Err(e) => return Action::Internal(ForwardError::Rebuild(e)),
     };
-    match decide(&config.local_addrs, &config.routes, &reply) {
-        // The requester is ourselves (self-ping): deliver the reply
-        // locally - and since it is an ECHO_REPLY it triggers nothing.
-        Decision::Deliver => Action::Deliver(reply),
-        Decision::Drop(reason) => Action::Drop {
-            reason,
-            packet: reply,
-        },
+    route_out(config, reply)
+}
+
+/// Routes a locally originated packet (ECHO_REPLY, ACK) through the
+/// normal decision path. Identical semantics for both: fresh packets
+/// skip `forward()`'s decrement; the destination is resolved by the
+/// route table; no route = drop, never a bounce to the UDP sender.
+fn route_out(config: &NodeConfig, packet: Packet) -> Action {
+    match decide(&config.local_addrs, &config.routes, &packet) {
+        // Destination is ourselves (self-addressed): deliver locally -
+        // and being a reply-type packet it triggers nothing further.
+        Decision::Deliver => Action::Deliver(packet),
+        Decision::Drop(reason) => Action::Drop { reason, packet },
         Decision::Forward(next_hop) => match config.next_hops.get(&next_hop) {
             Some(&endpoint) => Action::Send {
-                packet: reply,
+                packet,
                 endpoint,
+                originated: true,
             },
             None => Action::Drop {
                 reason: DropReason::NoRoute,
-                packet: reply,
+                packet,
             },
         },
     }
+}
+
+/// Executes one [`Action`]: logs it and performs the socket I/O.
+/// `DeliverThen` recurses so a DATA delivery is followed by its routed
+/// ACK; `seen_data` dedups retransmitted DATA (deliver once, but still
+/// route every ACK - the sender may retry on a lost one).
+fn act(
+    transport: &UdpTransport,
+    action: Action,
+    malformed_count: &mut u64,
+    seen_data: &mut HashSet<(Address, u32)>,
+) {
+    match action {
+        Action::Deliver(p) => log_delivered(&p, false),
+        Action::DeliverThen { packet, then } => {
+            let h = packet.header();
+            // Dedup fires only for DATA; other DeliverThen payloads are
+            // already protected by their sender-side semantics.
+            if h.packet_type() == PacketType::Data && !seen_data.insert((h.source(), h.packet_id()))
+            {
+                log_delivered(&packet, true);
+            } else {
+                if seen_data.len() > 4096 {
+                    seen_data.clear();
+                }
+                log_delivered(&packet, false);
+            }
+            act(transport, *then, malformed_count, seen_data);
+        }
+        Action::Send {
+            packet,
+            endpoint,
+            originated,
+        } => {
+            let h = packet.header();
+            // 'replied'/'acked' only for locally originated answers;
+            // transit packets - including transit ACKs - are forwarded.
+            let verb = match (originated, h.packet_type()) {
+                (true, PacketType::EchoReply) => "replied",
+                (true, PacketType::Ack) => "acked",
+                _ => "forwarded",
+            };
+            match transport.send_to(&packet.encode(), &endpoint) {
+                Ok(_) => println!(
+                    "{verb}: {} -> {} via {} (hop_limit {})",
+                    h.source(),
+                    h.destination(),
+                    endpoint,
+                    h.hop_limit()
+                ),
+                Err(e) => eprintln!("send to {endpoint} failed: {e}"),
+            }
+        }
+        Action::Drop { reason, packet } => {
+            let h = packet.header();
+            println!("dropped ({reason}): {} -> {}", h.source(), h.destination());
+        }
+        // Throttled: first few malformed datagrams logged individually,
+        // then only each 1000th - a hostile or broken peer must not
+        // drown the log.
+        Action::Malformed(e) => {
+            *malformed_count += 1;
+            if *malformed_count <= 3 || *malformed_count % 1000 == 0 {
+                eprintln!("malformed datagram #{malformed_count}: {e}");
+            }
+        }
+        Action::Internal(e) => eprintln!("internal forward error: {e}"),
+    }
+}
+
+/// The application-facing delivery interface for this stage: one
+/// stdout line per delivered packet, payload included. Duplicates are
+/// marked, not silently re-delivered.
+fn log_delivered(p: &Packet, duplicate: bool) {
+    let h = p.header();
+    println!(
+        "delivered{}: {} -> {} type={} id=0x{:08x} {} B payload {}",
+        if duplicate { " (duplicate)" } else { "" },
+        h.source(),
+        h.destination(),
+        h.packet_type().name(),
+        h.packet_id(),
+        p.payload().len(),
+        fmt_payload(p.payload())
+    );
 }
 
 /// Renders payload bytes for logs: UTF-8 text in quotes, anything else
@@ -235,58 +356,22 @@ pub fn run(config: &NodeConfig, running: &AtomicBool) -> io::Result<()> {
     // is truncated by the OS and then rejected by Packet::parse.
     let mut buf = vec![0u8; MAX_PACKET_LEN];
     let mut malformed_count = 0u64;
+    // Bounded dedup: retransmitted DATA (the sender retries when its
+    // ACK is lost) must not be delivered to the application twice.
+    // 4096 recent (source, packet_id) keys; on overflow the cache
+    // resets - a stale duplicate may reappear then, acceptable here.
+    let mut seen_data: HashSet<(Address, u32)> = HashSet::new();
 
     while running.load(Ordering::Relaxed) {
         match transport.recv_from(&mut buf) {
-            Ok((n, _from)) => match handle(config, &buf[..n]) {
-                Action::Deliver(p) => {
-                    let h = p.header();
-                    println!(
-                        "delivered: {} -> {} type={} id=0x{:08x} {} B payload {}",
-                        h.source(),
-                        h.destination(),
-                        h.packet_type().name(),
-                        h.packet_id(),
-                        p.payload().len(),
-                        fmt_payload(p.payload())
-                    );
-                }
-                Action::Send { packet, endpoint } => {
-                    let h = packet.header();
-                    // 'replied' for a locally originated ECHO_REPLY,
-                    // 'forwarded' for a transit packet - same send path,
-                    // clearer logs.
-                    let verb = if h.packet_type() == PacketType::EchoReply {
-                        "replied"
-                    } else {
-                        "forwarded"
-                    };
-                    match transport.send_to(&packet.encode(), &endpoint) {
-                        Ok(_) => println!(
-                            "{verb}: {} -> {} via {} (hop_limit {})",
-                            h.source(),
-                            h.destination(),
-                            endpoint,
-                            h.hop_limit()
-                        ),
-                        Err(e) => eprintln!("send to {endpoint} failed: {e}"),
-                    }
-                }
-                Action::Drop { reason, packet } => {
-                    let h = packet.header();
-                    println!("dropped ({reason}): {} -> {}", h.source(), h.destination());
-                }
-                // Throttled: first few malformed datagrams logged
-                // individually, then only each 1000th - a hostile or
-                // broken peer must not drown the log.
-                Action::Malformed(e) => {
-                    malformed_count += 1;
-                    if malformed_count <= 3 || malformed_count % 1000 == 0 {
-                        eprintln!("malformed datagram #{malformed_count}: {e}");
-                    }
-                }
-                Action::Internal(e) => eprintln!("internal forward error: {e}"),
-            },
+            Ok((n, _from)) => {
+                act(
+                    &transport,
+                    handle(config, &buf[..n]),
+                    &mut malformed_count,
+                    &mut seen_data,
+                );
+            }
             Err(e) => match e.kind() {
                 // Read-timeout expiry and EINTR: loop around and
                 // re-check `running`.
@@ -587,12 +672,21 @@ mod tests {
     fn handle_delivers_to_local_address() {
         let cfg = config();
         let wire = packet(addr(2), addr(1), 64).encode();
+        // DATA to a local address: deliver, then the ACK's routing
+        // outcome (no route to the sender -> dropped ACK).
         match handle(&cfg, &wire) {
-            Action::Deliver(p) => {
+            Action::DeliverThen { packet: p, then } => {
                 assert_eq!(p.header().destination(), addr(1));
                 assert_eq!(p.payload(), b"x");
+                assert!(matches!(
+                    *then,
+                    Action::Drop {
+                        reason: DropReason::NoRoute,
+                        ..
+                    }
+                ));
             }
-            other => panic!("expected Deliver, got {other:?}"),
+            other => panic!("expected DeliverThen, got {other:?}"),
         }
     }
 
@@ -602,8 +696,8 @@ mod tests {
         for hl in [1, 0] {
             let wire = packet(addr(2), addr(1), hl).encode();
             assert!(
-                matches!(handle(&cfg, &wire), Action::Deliver(_)),
-                "local packet with hop_limit {hl} must be Deliver"
+                matches!(handle(&cfg, &wire), Action::DeliverThen { .. }),
+                "local packet with hop_limit {hl} must be delivered"
             );
         }
     }
@@ -613,7 +707,9 @@ mod tests {
         let cfg = config();
         let wire = packet(addr(2), addr(9), 64).encode();
         match handle(&cfg, &wire) {
-            Action::Send { packet, endpoint } => {
+            Action::Send {
+                packet, endpoint, ..
+            } => {
                 assert_eq!(endpoint, ep(44002));
                 let h = packet.header();
                 assert_eq!(h.hop_limit(), 63);
@@ -668,7 +764,9 @@ mod tests {
             .unwrap()
             .encode();
         match handle(&cfg, &wire) {
-            Action::Send { packet, endpoint } => {
+            Action::Send {
+                packet, endpoint, ..
+            } => {
                 let h = packet.header();
                 assert_eq!(h.packet_type(), PacketType::EchoReply);
                 // Mirrored addresses, preserved correlation fields.
@@ -717,9 +815,68 @@ mod tests {
     }
 
     #[test]
-    fn handle_data_packet_stays_plain_delivery() {
+    fn handle_data_delivers_then_routes_ack() {
+        let cfg = config_with_return_route();
+        let data = Packet::builder(PacketType::Data, addr(2), addr(1))
+            .packet_id(0xBEEF)
+            .payload(b"hello".to_vec())
+            .build()
+            .unwrap();
+        match handle(&cfg, &data.encode()) {
+            Action::DeliverThen { packet, then } => {
+                assert_eq!(packet, data);
+                // The ACK goes through routing like any originated
+                // packet - here: forwarded to the sender's next hop.
+                match *then {
+                    Action::Send {
+                        packet: ack,
+                        endpoint,
+                        ..
+                    } => {
+                        let h = ack.header();
+                        assert_eq!(h.packet_type(), PacketType::Ack);
+                        assert_eq!(h.source(), addr(1));
+                        assert_eq!(h.destination(), addr(2));
+                        assert_eq!(h.packet_id(), 0xBEEF);
+                        assert_eq!(endpoint, ep(44003));
+                    }
+                    other => panic!("expected Send(ACK), got {other:?}"),
+                }
+            }
+            other => panic!("expected DeliverThen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_data_without_return_route_drops_ack_but_delivers() {
+        let cfg = config(); // no route back to addr(2)
+        let wire = Packet::builder(PacketType::Data, addr(2), addr(1))
+            .packet_id(7)
+            .payload(b"hi".to_vec())
+            .build()
+            .unwrap()
+            .encode();
+        match handle(&cfg, &wire) {
+            Action::DeliverThen { then, .. } => match *then {
+                Action::Drop { reason, packet } => {
+                    assert_eq!(reason, DropReason::NoRoute);
+                    assert_eq!(packet.header().packet_type(), PacketType::Ack);
+                }
+                other => panic!("expected Drop(NoRoute) for ACK, got {other:?}"),
+            },
+            other => panic!("expected DeliverThen, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_never_acks_an_ack() {
+        // An ACK addressed to us is just Deliver - never DeliverThen.
         let cfg = config();
-        let wire = packet(addr(2), addr(1), 64).encode();
+        let data = Packet::builder(PacketType::Data, addr(1), addr(2))
+            .packet_id(1)
+            .build()
+            .unwrap();
+        let wire = data.ack().unwrap().encode();
         assert!(matches!(handle(&cfg, &wire), Action::Deliver(_)));
     }
 
