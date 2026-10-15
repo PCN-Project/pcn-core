@@ -61,13 +61,17 @@ Built now:
 - `pcn-routing` - static exact-match route table and the
   deliver/forward/drop decision with hop-limit handling.
 - `pcnd` - node daemon: `run` binds a UDP socket and drives the routing
-  decision loop (deliver locally - logged only, forward with Hop Limit
-  decrement, or drop); `selftest`/`check` remain.
+  decision loop; answers locally-delivered ECHO_REQUEST with an
+  ECHO_REPLY sent back through the route table; `selftest`/`check`
+  remain.
+- `pcn` - client CLI: `pcn ping` probes a target PCN address with
+  sequential ECHO_REQUESTs via a configured first hop and reports RTT
+  and loss.
 - Provisional specs under `docs/protocol/`.
 
-Explicitly not built: echo responder and ping, identity crypto,
-registry, policy, NAT traversal, Android packaging. See the README
-status table.
+Explicitly not built: dynamic routing, identity crypto, registry,
+policy, NAT traversal, Android packaging, and any semantics for DATA,
+CONTROL, or ERROR payloads. See the README status table.
 
 ## 4. Platforms
 

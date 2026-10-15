@@ -143,6 +143,31 @@ impl Packet {
             .payload(payload)
             .build()
     }
+
+    /// Builds the [`PacketType::EchoReply`] answering this packet.
+    ///
+    /// Echo semantics: the reply's source is the request's destination,
+    /// the reply's destination is the request's source, `packet_id` and
+    /// the payload are copied verbatim. The reply is a *new* packet, so
+    /// it originates with [`DEFAULT_HOP_LIMIT`] - hop-limit decrement
+    /// applies to forwarding, not to local origination.
+    ///
+    /// # Errors
+    /// * [`BuildError::NotEchoRequest`] - `self` is not an ECHO_REQUEST;
+    ///   answering anything else (in particular an ECHO_REPLY) would
+    ///   enable reply loops.
+    /// * The usual builder address errors - unreachable for a parsed
+    ///   packet, kept for API honesty.
+    pub fn echo_reply(&self) -> Result<Self, BuildError> {
+        let h = self.header();
+        if h.packet_type() != PacketType::EchoRequest {
+            return Err(BuildError::NotEchoRequest);
+        }
+        Self::builder(PacketType::EchoReply, h.destination(), h.source())
+            .packet_id(h.packet_id())
+            .payload(self.payload())
+            .build()
+    }
 }
 
 impl fmt::Debug for Packet {
@@ -465,5 +490,39 @@ mod tests {
         assert_eq!(packet.header().packet_type(), PacketType::EchoRequest);
         assert_eq!(packet.header().packet_id(), 42);
         assert_eq!(packet.payload(), b"ping");
+    }
+
+    #[test]
+    fn echo_reply_mirrors_request() {
+        let request = Packet::echo_request(src(), dst(), 42, b"ping").unwrap();
+        let reply = request.echo_reply().unwrap();
+        let h = reply.header();
+
+        assert_eq!(h.packet_type(), PacketType::EchoReply);
+        // Addresses swapped: from the request's destination back to its source.
+        assert_eq!(h.source(), dst());
+        assert_eq!(h.destination(), src());
+        // Correlation fields and payload preserved.
+        assert_eq!(h.packet_id(), 42);
+        assert_eq!(reply.payload(), b"ping");
+        // Fresh packet: full hop budget, not the request's remainder.
+        assert_eq!(h.hop_limit(), DEFAULT_HOP_LIMIT);
+        // And it stays a valid wire packet.
+        assert_eq!(Packet::parse(&reply.encode()), Ok(reply));
+    }
+
+    #[test]
+    fn echo_reply_rejects_non_request() {
+        // Answering an ECHO_REPLY (or DATA) must be impossible - that is
+        // what breaks reply loops.
+        for ty in [
+            PacketType::Data,
+            PacketType::EchoReply,
+            PacketType::Error,
+            PacketType::Control,
+        ] {
+            let packet = Packet::builder(ty, src(), dst()).build().unwrap();
+            assert_eq!(packet.echo_reply(), Err(BuildError::NotEchoRequest));
+        }
     }
 }

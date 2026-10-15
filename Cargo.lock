@@ -3,6 +3,16 @@
 version = 3
 
 [[package]]
+name = "pcn"
+version = "0.1.0"
+dependencies = [
+ "pcn-address",
+ "pcn-packet",
+ "pcn-transport",
+ "pcn-transport-udp",
+]
+
+[[package]]
 name = "pcn-address"
 version = "0.1.0"
 

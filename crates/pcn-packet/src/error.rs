@@ -199,6 +199,9 @@ pub enum BuildError {
         /// The 3-bit type field of the address.
         found: u8,
     },
+    /// [`Packet::echo_reply`](crate::Packet::echo_reply) was called on a
+    /// packet that is not an [`EchoRequest`](crate::PacketType::EchoRequest).
+    NotEchoRequest,
 }
 
 impl fmt::Display for BuildError {
@@ -222,6 +225,9 @@ impl fmt::Display for BuildError {
                 "{role} address has unsupported type {found} \
                  (v0.1 assigns 1 = private, 2 = public)"
             ),
+            Self::NotEchoRequest => {
+                f.write_str("cannot build ECHO_REPLY from a non-ECHO_REQUEST packet")
+            }
         }
     }
 }

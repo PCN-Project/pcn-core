@@ -24,7 +24,8 @@ pcn-core/
 │   ├── architecture/       # overview.md, network-model.md
 │   └── protocol/           # packet-format, addressing, transport, security
 ├── apps/
-│   └── pcnd/               # node daemon (milestone: selftest + packet check)
+│   ├── pcn/                # client CLI (pcn ping over PCN-over-UDP)
+│   └── pcnd/               # node daemon (pcnd run/selftest/check)
 ├── crates/
 │   ├── pcn-address/        # Address, DomainId, ScopedAddress
 │   ├── pcn-packet/         # v0.1 wire format: encode/parse/validate
@@ -44,12 +45,13 @@ pcn-core/
 | `pcn-routing` | Static exact-match `RouteTable`, deliver/forward/drop decision, hop-limit-aware `forward` helper - drives `pcnd run` |
 | `pcn-transport` + `pcn-transport-udp` | `Transport` trait (send/recv/timeout/local endpoint) and a synchronous `UdpSocket` implementation |
 | `pcn-packet` | Typed `Header`/`Packet`/`PacketType`, deterministic big-endian encoding, validating parser with typed `ParseError`, `PacketBuilder` with `BuildError` |
-| `pcnd` | `pcnd run` starts a real node: UDP receive loop, static routes, local delivery (log only), forwarding with Hop Limit decrement. `pcnd selftest`/`check <hex>` still work |
+| `pcnd` | `pcnd run` starts a real node: UDP receive loop, static routes, local delivery, forwarding with Hop Limit decrement, ECHO_REQUEST -> ECHO_REPLY responder. `selftest`/`check` still work |
+| `pcn` | `pcn ping` sends real PCN ECHO_REQUESTs over UDP through a configured next hop, matches replies (type + both addresses + packet_id), reports RTT and loss |
 
 ### Planned (not created - no empty crates)
 
-`apps/pcn` (CLI for node management), `services/pcn-registry` (PCN Global
-registry), `crates/pcn-protocol` (message semantics), `crates/pcn-identity`
+`services/pcn-registry` (PCN Global registry),
+`crates/pcn-protocol` (message semantics), `crates/pcn-identity`
 (cryptographic PCN-ID), `crates/pcn-config` (configuration).
 
 Deviation from the original sketch: `tests/` and `deploy/` exist as
@@ -86,9 +88,33 @@ pcnd run --listen 127.0.0.1:41003 \
 
 The node parses every UDP datagram as a PCN packet, applies the static
 route table, and logs each decision: `delivered:` (local destination),
-`forwarded:` (rebuilt with Hop Limit - 1 toward the next hop's endpoint),
-or `dropped:`. Delivered packets are only logged - there is no echo
-responder or ping yet.
+`forwarded:`/`replied:` (sent toward the next hop's endpoint),
+or `dropped:`.
+
+Ping end-to-end - A (client) -> R1 (router) -> B (node) and back,
+all on loopback. Note the return routes: ping only works if every node
+on the path knows the way back to A's PCN address.
+
+```bash
+# B - destination, answers ECHO_REQUEST; route back to A via R1
+pcnd run --listen 127.0.0.1:41003 --address pcn~1000-0000-00002 \
+    --next-hop 1=127.0.0.1:41002 --route pcn~1000-0000-00001=1
+
+# R1 - router, routes to B (next-hop 1) and back to A (next-hop 2)
+pcnd run --listen 127.0.0.1:41002 --address pcn~1000-0000-00009 \
+    --next-hop 1=127.0.0.1:41003 --route pcn~1000-0000-00002=1 \
+    --next-hop 2=127.0.0.1:41001 --route pcn~1000-0000-00001=2
+
+# A - the ping client IS a PCN endpoint; --via is its gateway
+pcn ping --listen 127.0.0.1:41001 --source pcn~1000-0000-00001 \
+    --target pcn~1000-0000-00002 --via 127.0.0.1:41002 \
+    --count 4 --timeout-ms 1000 --interval-ms 1000
+```
+
+Each `reply from pcn~...` line reports RTT on a monotonic clock; the
+summary prints sent/received/lost, loss percentage and rtt min/avg/max.
+Inter-node transport is UDP only; there is no dynamic routing,
+cryptographic neighbor identity, or PCN Global.
 
 ## Engineering rules
 

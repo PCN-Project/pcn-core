@@ -17,7 +17,7 @@
 //! the resolution the routing crate deliberately does not perform.
 
 use pcn_address::Address;
-use pcn_packet::{Packet, ParseError, MAX_PACKET_LEN};
+use pcn_packet::{Packet, PacketType, ParseError, MAX_PACKET_LEN};
 use pcn_routing::{decide, forward, Decision, DropReason, ForwardError, NextHopId, RouteTable};
 use pcn_transport::Transport;
 use pcn_transport_udp::UdpTransport;
@@ -104,7 +104,13 @@ pub fn handle(config: &NodeConfig, bytes: &[u8]) -> Action {
         Err(e) => return Action::Malformed(e),
     };
     match decide(&config.local_addrs, &config.routes, &packet) {
-        Decision::Deliver => Action::Deliver(packet),
+        // Locally addressed ECHO_REQUEST is answered; everything else
+        // delivered (including ECHO_REPLY) is just delivered - replies
+        // never trigger replies, which breaks reply loops.
+        Decision::Deliver => match packet.header().packet_type() {
+            PacketType::EchoRequest => respond(config, packet),
+            _ => Action::Deliver(packet),
+        },
         Decision::Drop(reason) => Action::Drop { reason, packet },
         Decision::Forward(next_hop) => match config.next_hops.get(&next_hop) {
             Some(&endpoint) => match forward(&packet) {
@@ -125,6 +131,43 @@ pub fn handle(config: &NodeConfig, bytes: &[u8]) -> Action {
             None => Action::Drop {
                 reason: DropReason::NoRoute,
                 packet,
+            },
+        },
+    }
+}
+
+/// Answers a locally delivered ECHO_REQUEST through the normal routing
+/// path.
+///
+/// The reply is a newly originated packet (`Packet::echo_reply` gives it
+/// a fresh Hop Limit), so it does not pass through
+/// `pcn_routing::forward`; decrementing applies to transit only. Its
+/// destination is the request's source address. With no return route the
+/// reply is dropped as [`DropReason::NoRoute`]; it is never bounced
+/// directly to the UDP sender endpoint and never auto-routed.
+fn respond(config: &NodeConfig, request: Packet) -> Action {
+    let reply = match request.echo_reply() {
+        Ok(r) => r,
+        // Unreachable: handle() already verified EchoRequest. Kept
+        // explicit so no error path ever panics.
+        Err(e) => return Action::Internal(ForwardError::Rebuild(e)),
+    };
+    match decide(&config.local_addrs, &config.routes, &reply) {
+        // The requester is ourselves (self-ping): deliver the reply
+        // locally - and since it is an ECHO_REPLY it triggers nothing.
+        Decision::Deliver => Action::Deliver(reply),
+        Decision::Drop(reason) => Action::Drop {
+            reason,
+            packet: reply,
+        },
+        Decision::Forward(next_hop) => match config.next_hops.get(&next_hop) {
+            Some(&endpoint) => Action::Send {
+                packet: reply,
+                endpoint,
+            },
+            None => Action::Drop {
+                reason: DropReason::NoRoute,
+                packet: reply,
             },
         },
     }
@@ -190,9 +233,17 @@ pub fn run(config: &NodeConfig, running: &AtomicBool) -> io::Result<()> {
                 }
                 Action::Send { packet, endpoint } => {
                     let h = packet.header();
+                    // 'replied' for a locally originated ECHO_REPLY,
+                    // 'forwarded' for a transit packet - same send path,
+                    // clearer logs.
+                    let verb = if h.packet_type() == PacketType::EchoReply {
+                        "replied"
+                    } else {
+                        "forwarded"
+                    };
                     match transport.send_to(&packet.encode(), &endpoint) {
                         Ok(_) => println!(
-                            "forwarded: {} -> {} via {} (hop_limit {})",
+                            "{verb}: {} -> {} via {} (hop_limit {})",
                             h.source(),
                             h.destination(),
                             endpoint,
@@ -580,6 +631,76 @@ mod tests {
                 other => panic!("expected Drop(HopLimitExhausted) for hl {hl}, got {other:?}"),
             }
         }
+    }
+
+    /// Config whose node can route replies back to requester addr(2).
+    fn config_with_return_route() -> NodeConfig {
+        let mut cfg = config();
+        cfg.next_hops.insert(NextHopId(3), ep(44003));
+        cfg.routes.insert(addr(2), NextHopId(3));
+        cfg
+    }
+
+    #[test]
+    fn handle_answers_local_echo_request_via_routing() {
+        let cfg = config_with_return_route();
+        let wire = Packet::echo_request(addr(2), addr(1), 77, b"ping")
+            .unwrap()
+            .encode();
+        match handle(&cfg, &wire) {
+            Action::Send { packet, endpoint } => {
+                let h = packet.header();
+                assert_eq!(h.packet_type(), PacketType::EchoReply);
+                // Mirrored addresses, preserved correlation fields.
+                assert_eq!(h.source(), addr(1));
+                assert_eq!(h.destination(), addr(2));
+                assert_eq!(h.packet_id(), 77);
+                assert_eq!(packet.payload(), b"ping");
+                // Originated packet: full hop budget, normal send path.
+                assert_eq!(h.hop_limit(), 64);
+                assert_eq!(endpoint, ep(44003));
+            }
+            other => panic!("expected Send(ECHO_REPLY), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_drops_reply_when_no_return_route() {
+        // config() has no route to requester addr(2): the reply must be
+        // dropped by routing - never bounced to the UDP sender.
+        let cfg = config();
+        let wire = Packet::echo_request(addr(2), addr(1), 77, b"ping")
+            .unwrap()
+            .encode();
+        match handle(&cfg, &wire) {
+            Action::Drop { reason, packet } => {
+                assert_eq!(reason, DropReason::NoRoute);
+                assert_eq!(packet.header().packet_type(), PacketType::EchoReply);
+            }
+            other => panic!("expected Drop(NoRoute) for reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_never_answers_an_echo_reply() {
+        let cfg = config_with_return_route();
+        let req = Packet::echo_request(addr(1), addr(2), 5, b"x").unwrap();
+        let reply_wire = req.echo_reply().unwrap().encode();
+        // A reply addressed to our local addr(1) is just Deliver - not
+        // Send; answering a reply would loop forever.
+        match handle(&cfg, &reply_wire) {
+            Action::Deliver(p) => {
+                assert_eq!(p.header().packet_type(), PacketType::EchoReply)
+            }
+            other => panic!("expected Deliver for ECHO_REPLY, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handle_data_packet_stays_plain_delivery() {
+        let cfg = config();
+        let wire = packet(addr(2), addr(1), 64).encode();
+        assert!(matches!(handle(&cfg, &wire), Action::Deliver(_)));
     }
 
     #[test]

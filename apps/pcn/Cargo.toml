@@ -1,0 +1,16 @@
+[package]
+name = "pcn"
+version = "0.1.0"
+description = "PCN client CLI: ECHO ping over PCN packets via UDP transport"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+pcn-address = { path = "../../crates/pcn-address", version = "0.1.0" }
+pcn-packet = { path = "../../crates/pcn-packet", version = "0.1.0" }
+pcn-transport = { path = "../../crates/pcn-transport", version = "0.1.0" }
+pcn-transport-udp = { path = "../../crates/pcn-transport-udp", version = "0.1.0" }
